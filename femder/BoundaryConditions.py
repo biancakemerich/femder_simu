@@ -11,6 +11,7 @@ class BC():
         self.v = {}
         self.rhoc = {}
         self.cc = {}
+        self.materials = []
 
     def impedance(self, domain_index, impedance):
         """
@@ -222,7 +223,7 @@ class BC():
 
             self.mu[domain_index] = np.array(1/Zs)
 
-    self.materials = []  # MUDAR AS VÁRIAVEIS ####################################################################################
+      # MUDAR AS VÁRIAVEIS ####################################################################################
 
     def add_material(self, normal_incidence_alpha=[], statistical_alpha=[], octave_bands_statistical_alpha=[], octave_bands=[],
                      third_octave_bands_statistical_alpha=[], third_octave_bands=[], admittance=[],
