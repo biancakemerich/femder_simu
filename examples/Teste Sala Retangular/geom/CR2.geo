@@ -786,3 +786,5 @@ Physical Surface("concrete", 4) = {84, 90, 93, 104, 75, 107, 109, 79, 99, 78, 2,
 Volume(1) = {1};
 //+
 Physical Volume("Volume", 1) = {1};
+//+
+Physical Volume(298) = {1};
