@@ -110,7 +110,7 @@ class AlgControls():
             self.freq = freq_vec
         self.w = 2.0 * np.pi * self.freq
         self.k0 = self.w / self.c0
-        self.fcenter = self.freq
+        self.fcenter = self.freq # ?
 
     def third_octave_fvec(self,fcentermin=100,fcentermax=2000,nperoct=1):
         
