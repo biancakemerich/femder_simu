@@ -81,7 +81,7 @@ class GridImport():
         os.remove(path_name+'/current_mesh.msh')
         
 class GridImport3D:
-    def __init__(self,AP,path_to_geo,S=None,R=None,fmax=1000, num_freq=6,scale=1,order=1,plot=False,meshDim=3,center_geom=False,add_rng=False):
+    def __init__(self,AP,path_to_geo,S=None,R=None,fmax=1000, num_freq=6,scale=1,order=1,plot=False,meshDim=3,center_geom=False,add_rng=False, load_method='meshio'):
         
         self.R = R
         self.S = S
@@ -142,22 +142,22 @@ class GridImport3D:
             gmsh.model.mesh.generate(meshDim)
             gmsh.model.mesh.setOrder(self.order)
             # gmsh.model.mesh.optimize(method='Relocate3D',force=False)
-            #if load_method == "meshio":
-                #mesh_data = {}
-                #write_and_extract_mesh_data(mesh_data)
-                #self.nos = mesh_data["vertices"]
-                #self.elem_surf = mesh_data["elem_surf"]
-                #self.elem_vol = mesh_data["elem_vol"]
-                #self.domain_index_surf = mesh_data["domain_index_surf"]
-                #self.domain_index_vol = mesh_data["domain_index_vol"]
+            if load_method == "meshio":
+                mesh_data = {}
+                write_and_extract_mesh_data(mesh_data)
+                self.nos = mesh_data["vertices"]
+                self.elem_surf = mesh_data["elem_surf"]
+                self.elem_vol = mesh_data["elem_vol"]
+                self.domain_index_surf = mesh_data["domain_index_surf"]
+                self.domain_index_vol = mesh_data["domain_index_vol"]
 
-            #if load_method != "meshio":
-                #if self.order == 1:
-                    #if meshDim == 3:
-                        #elemTy,elemTa,nodeTags = gmsh.model.mesh.getElements(3)
-                        #self.elem_vol = np.array(nodeTags,dtype=int).reshape(-1,4)-1
-                    #elif meshDim == 2:
-                        #self.elem_vol = []
+            if load_method != "meshio":
+                if self.order == 1:
+                    if meshDim == 3:
+                        elemTy,elemTa,nodeTags = gmsh.model.mesh.getElements(3)
+                        self.elem_vol = np.array(nodeTags,dtype=int).reshape(-1,4)-1
+                    elif meshDim == 2:
+                        self.elem_vol = []
 
                     elemTys,elemTas,nodeTagss = gmsh.model.mesh.getElements(2)
                     self.elem_surf = np.array(nodeTagss,dtype=int).reshape(-1,3)-1
