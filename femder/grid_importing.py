@@ -81,7 +81,7 @@ class GridImport():
         os.remove(path_name+'/current_mesh.msh')
         
 class GridImport3D:
-    def __init__(self,AP,path_to_geo,S=None,R=None,fmax=1000, num_freq=6,scale=1,order=1,plot=False,meshDim=3,center_geom=False,add_rng=False, load_method="meshio"):
+    def __init__(self,AP,path_to_geo,S=None,R=None,fmax=1000, num_freq=6,scale=1,order=1,plot=False,meshDim=3,center_geom=False,add_rng=False):
         
         self.R = R
         self.S = S
@@ -148,7 +148,6 @@ class GridImport3D:
                 self.nos = mesh_data["vertices"]
                 self.elem_surf = mesh_data["elem_surf"]
                 self.elem_vol = mesh_data["elem_vol"]
-                self.elem_surf = mesh_data["elem_surf"]
                 self.domain_index_surf = mesh_data["domain_index_surf"]
                 self.domain_index_vol = mesh_data["domain_index_vol"]
 
