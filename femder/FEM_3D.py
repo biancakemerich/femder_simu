@@ -1854,12 +1854,12 @@ class FEM3D:
                      self.pR.append(self.pN[:,closest_node(self.nos,R.coord[i,:])])
                  else:
                      self.pR.append(coord_interpolation(self.nos, self.elem_vol, self.R[i, :], self.pN))
-                     self.pR[:,i] = coord_interpolation(self.nos, self.elem_vol, R.coord[i,:], self.pN)
-                     plt.semilogx(self.freq,p2SPL(self.pR[:,i]),linestyle = linest,label=f'R{i} | {self.R.coord[i,:]}m')
+                 # self.pR[:,i] = coord_interpolation(self.nos, self.elem_vol, R.coord[i,:], self.pN)
+                 # plt.semilogx(self.freq,p2SPL(self.pR[:,i]),linestyle = linest,label=f'R{i} | {self.R.coord[i,:]}m')
         
-             if len(self.R.coord) > 1:
-                plt.semilogx(self.freq,np.mean(p2SPL(self.pR),axis=1),label='Average',linewidth = 5)
-             
+             # if len(self.R.coord) > 1:
+             #     plt.semilogx(self.freq,np.mean(p2SPL(self.pR),axis=1),label='Average',linewidth = 5)
+             #
              plt.grid()
              plt.legend()
              plt.xlabel('Frequency[Hz]')
