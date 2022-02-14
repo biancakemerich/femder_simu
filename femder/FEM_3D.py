@@ -1840,34 +1840,34 @@ class FEM3D:
         self.pR = np.asarray(self.pR).squeeze().T
         # print(self.pR.shape)
 
-        # if plot:
-        #     plt.style.use('seaborn-notebook')
-        #     plt.figure(figsize=(5*1.62,5))
-        #     if len(self.pR[0,:]) > 1:
-        #         linest = ':'
-        #     else:
-        #         linest = '-'
-        #     for i in range(len(self.R.coord)):
-        #         closest_node_to_receiver = closest_node(self.nos, self.R[i, :])
-        #         if np.linalg.norm(
-        #                 self.R[i, :] - self.vertices[closest_node_to_receiver]) < interpolation_tolerance:
-        #             self.pR.append(self.pN[:,closest_node(self.nos,R.coord[i,:])])
-        #         else:
-        #             self.pR.append(coord_interpolation(self.nos, self.elem_vol, self.R[i, :], self.pN))
-        #         # self.pR[:,i] = coord_interpolation(self.nos, self.elem_vol, R.coord[i,:], self.pN)
-        #         # plt.semilogx(self.freq,p2SPL(self.pR[:,i]),linestyle = linest,label=f'R{i} | {self.R.coord[i,:]}m')
-        #
-        #     # if len(self.R.coord) > 1:
-        #     #     plt.semilogx(self.freq,np.mean(p2SPL(self.pR),axis=1),label='Average',linewidth = 5)
-        #     #
-        #     plt.grid()
-        #     plt.legend()
-        #     plt.xlabel('Frequency[Hz]')
-        #     plt.ylabel('SPL [dB]')
-        #     # plt.show()
-        # else:
-        #     for i in range(len(self.R.coord)):
-        #         self.pR[:,i] = self.pN[:,closest_node(self.nos,R.coord[i,:])]
+        if plot:
+             plt.style.use('seaborn-notebook')
+             plt.figure(figsize=(5*1.62,5))
+             if len(self.pR[0,:]) > 1:
+                 linest = ':'
+             else:
+                 linest = '-'
+             for i in range(len(self.R.coord)):
+                 closest_node_to_receiver = closest_node(self.nos, self.R[i, :])
+                 if np.linalg.norm(
+                         self.R[i, :] - self.vertices[closest_node_to_receiver]) < interpolation_tolerance:
+                     self.pR.append(self.pN[:,closest_node(self.nos,R.coord[i,:])])
+                 else:
+                     self.pR.append(coord_interpolation(self.nos, self.elem_vol, self.R[i, :], self.pN))
+                 # self.pR[:,i] = coord_interpolation(self.nos, self.elem_vol, R.coord[i,:], self.pN)
+                 # plt.semilogx(self.freq,p2SPL(self.pR[:,i]),linestyle = linest,label=f'R{i} | {self.R.coord[i,:]}m')
+        
+             # if len(self.R.coord) > 1:
+             #     plt.semilogx(self.freq,np.mean(p2SPL(self.pR),axis=1),label='Average',linewidth = 5)
+             #
+             plt.grid()
+             plt.legend()
+             plt.xlabel('Frequency[Hz]')
+             plt.ylabel('SPL [dB]')
+             # plt.show()
+        else:
+             for i in range(len(self.R.coord)):
+                 self.pR[:,i] = self.pN[:,closest_node(self.nos,R.coord[i,:])]
         return self.pR
     
     def evaluate_physical_group(self,domain_index,average=True,plot=False):
