@@ -1848,7 +1848,7 @@ class FEM3D:
              else:
                  linest = '-'
              for i in range(len(self.R.coord)):
-                 closest_node_to_receiver = closest_node(self.nos, self.R[i, :])
+                 closest_node_to_receiver = closest_node(self.nos, self.R.coord[i, :])
                  if np.linalg.norm(
                          self.R[i, :] - self.vertices[closest_node_to_receiver]) < interpolation_tolerance:
                      self.pR.append(self.pN[:,closest_node(self.nos,R.coord[i,:])])
