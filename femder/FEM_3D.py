@@ -1838,7 +1838,7 @@ class FEM3D:
             else:
                 self.pR.append(coord_interpolation(self.nos, self.elem_vol, self.R.coord[i, :], self.pN))
         self.pR = np.asarray(self.pR).squeeze().T
-        # print(self.pR.shape)
+        print(self.pR.shape)
 
         if plot:
              plt.style.use('seaborn-notebook')
