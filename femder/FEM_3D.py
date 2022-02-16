@@ -1868,9 +1868,6 @@ class FEM3D:
         # else:
         #     for i in range(len(self.R.coord)):
         #         self.pR[:,i] = self.pN[:,closest_node(self.nos,R.coord[i,:])]
-        else:
-             for i in range(len(self.R.coord)):
-                 self.pR[:,i] = self.pN[:,closest_node(self.nos,R.coord[i,:])]
         return self.pR
     
     def evaluate_physical_group(self,domain_index,average=True,plot=False):
