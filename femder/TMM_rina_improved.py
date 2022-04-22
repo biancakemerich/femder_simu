@@ -1,453 +1,492 @@
- 
-"""
-Calculation module.
-For further information check the function specific documentation.
-"""
 import collections
 import numpy as np
-import numpy.matlib as matlib
+import numpy.matlib
 import os
-from matplotlib import ticker, gridspec, style
+# import mpmath as mp
+from matplotlib import ticker, gridspec, style, rcParams
+from matplotlib.ticker import FormatStrFormatter
 from matplotlib import pyplot as plt
-import pandas
-import xlsxwriter
-from scipy.special import jv
-from scipy.interpolate import CubicSpline
-from scipy.signal import butter, freqz, savgol_filter
+import matplotlib
+# from matplotlib import style
+import matplotlib as mpl
+# import pandas
 import time
+import scipy.interpolate
 from scipy import integrate
-import pytta
-from tmm import _plot as plot
-from tmm import _utils as utils
-from tmm import _h5utils as h5utils
-from tmm.database.path import path as database_path
-style.use("seaborn-colorblind")
+from scipy.optimize import minimize
+# import pytta
 
+# outputs = out_path()
+style.use('seaborn-colorblind')
+
+outputs = os.getcwd()
+
+def find_nearest(array, value):
+    """
+    Function to find closest frequency in frequency array. Returns closest value and position index.
+    """
+    import numpy as np
+
+    array = np.asarray(array)
+    idx = (np.abs(array - value)).argmin()
+    return array[idx], idx
 
 class TMM:
     """"
-    Transfer Matrix Method for design and prediction of multilayered acoustic treatments.
+    Transfer Matrix Models for multilayer acoustic treatments.
     """
-    def __init__(self, fmin=20, fmax=5000, df=1, incidence="diffuse", incidence_angle=None, project_folder=None,
-                 filename=None, color=None):
-        """
-        Parameters
-        ----------
-        fmin : int, optional
-            Minimum frequency of interest.
-        fmax : int, optional
-            Maximum frequency of interest.
-        df : int, optional
-            Frequency resolution.
-        incidence : string, optional
-            String containing the desired type of incidence. 'normal' for normal incidence and 'diffuse' for and  field
-            incidence approximation. 'diffuse' incidence might not be realistic for all treatment types.
-        incidence_angle : list of ints, optional
-            List containing the minimum and maximum incidence angles and the step size.
-        project_folder : string, optional
-            Path to which files will be saved. If None is passed the current directory will be used.
-        filename : string, optional
-            Filename that will be used to save data and image files.
-        color : string, optional
-            String representing Matplolib color - used for plotting only.
-        """
-        if incidence_angle is None:
-            incidence_angle = [0, 78, 1]
 
-        self._fmin = fmin
-        self._fmax = fmax
-        self._freq = None
-        self._df = df
-        self._s0 = 1
-        self._srad = 1
-        self._air_prop = utils.AirProperties().standardized_c0_rho0()
-        self._incidence = incidence
-        self._incidence_angle = incidence_angle
-        self._z = None
-        self._z_angle = None
-        self._scat = None
-        self._matrix = {}
-        self._project_folder = project_folder
-        self._filename = filename
-        self._display_name = None
-        self._color = color
+    def __init__(self, fmin=20, fmax=500, df=0.5, incidence='normal', incidence_angle=[0, 78, 1],
+                 project_folder=None):
 
-    @property
-    def fmin(self):
-        """Return minimum frequency of analysis."""
-        return self._fmin
+        self.fmin = fmin
+        self.fmax = fmax
+        self.df = df
+        self.freq = np.linspace(self.fmin, self.fmax, int((self.fmax - self.fmin) / self.df) + 1)
+        self.z = np.zeros_like(self.freq, dtype='complex')
+        self.z_normal = None  # Only used for plotting when incidence == 'diffuse'
+        self.s0 = 1  # Device front termination area
+        self.srad = 1  # Device rear termination area
+        self.rhoc = None
+        self.cc = None
+        self.matrix = {}
+        self.air_prop = self.air_properties()
+        self.project_folder = project_folder
+        self.incidence = incidence
 
-    @fmin.setter
-    def fmin(self, new_fmin):
-        """Set new minimum frequency value."""
-        self._fmin = new_fmin
-
-    @property
-    def fmax(self):
-        """Return maximum frequency of analysis."""
-        return self._fmax
-
-    @fmax.setter
-    def fmax(self, new_fmax):
-        """Set new maximum frequency value."""
-        self._fmax = new_fmax
-
-    @property
-    def df(self):
-        """Return frequency resolution."""
-        return self._df
-
-    @df.setter
-    def df(self, new_df):
-        """Set new frequency resolution value."""
-        self._df = new_df
-
-    @property
-    def freq(self):
-        """Return frequency values."""
-        if self._freq is None:
-            return np.linspace(self.fmin, self.fmax, int((self.fmax - self.fmin) / self.df) + 1)
-        else:
-            return self._freq
-
-    @freq.setter
-    def freq(self, new_freq):
-        """Sets frequency values."""
-        self._freq = new_freq
-
-    @property
-    def air_prop(self):
-        """Return air properties dictionary."""
-        return self._air_prop
+        if self.incidence == 'diffuse':
+            self.incidence_angle = np.linspace(incidence_angle[0] + 0.01, incidence_angle[1] - 0.01,
+                                               int((incidence_angle[1] - incidence_angle[0]) / incidence_angle[2]))
+        elif self.incidence == 'normal':
+            self.incidence_angle = np.linspace(0, 1, 1)
+        elif self.incidence == 'angle':
+            self.incidence_angle = np.linspace(incidence_angle[0], incidence_angle[0] + 1, 1)
 
     @property
     def rho0(self):
-        """Return air density."""
-        return self.air_prop["air_density"]
+        return self.air_prop['air_density']
+
+    #         return 1.21
 
     @property
     def c0(self):
-        """Return speed of sound."""
-        return self.air_prop["speed_of_sound"]
+        return self.air_prop['speed_of_sound']
+
+    #         return 343
+
+    @property
+    def z0(self):
+        return self.rho0 * self.c0
+
+    @property
+    def z_norm(self):
+        return self.z / self.z0
+    
+    # @property
+    # def rhoc(self):
+    #     return self.rhoc
+
+    # @property
+    # def cc(self):
+    #     return self.cc
 
     @property
     def w0(self):
-        """Return angular frequency values."""
         return 2 * np.pi * self.freq
 
     @property
     def k0(self):
-        """Return wavenumber of air."""
         return self.w0 / self.c0
 
     @property
-    def s0(self):
-        """Return device front termination area."""
-        return self._s0
-
-    @s0.setter
-    def s0(self, new_s0):
-        """Set device front termination area."""
-        self._s0 = new_s0
+    def alpha(self):
+        R, alpha = self.reflection_and_absorption_coefficient(self.z)
+        return alpha
 
     @property
-    def srad(self):
-        """Return device rear termination area."""
-        return self._srad
-
-    @srad.setter
-    def srad(self, new_srad):
-        """Set device rear termination area."""
-        self._srad = new_srad
-
-    @property
-    def z0(self):
-        """Return air impedance."""
-        return self.rho0 * self.c0
-
-    @property
-    def z(self):
-        """Return surface impedance."""
-        if self._z is not None:
-            return self._z
-        else:
-            return np.zeros_like(self.freq, dtype="complex")
-
-    @z.setter
-    def z(self, new_z):
-        """Set surface impedance."""
-        self._z = new_z
-
-    @property
-    def z_angle(self):
-        """Return angle-dependent surface impedance."""
-        if self._z_angle is not None:
-            return self._z_angle
-        else:
-            return np.zeros_like(self.freq, shape=(len(self.freq), len(self.incidence_angle)))
-
-    @z_angle.setter
-    def z_angle(self, new_z_angle):
-        """Set angle-dependent surface impedance."""
-        self._z_angle = new_z_angle
+    def alpha_normal(self):
+        R, alpha = self.reflection_and_absorption_coefficient(self.z_normal)
+        return alpha
 
     @property
     def y(self):
-        """Return admittance."""
         return 1 / self.z
 
     @property
-    def alpha(self):
-        """Return absorption coefficient."""
-        _, alpha = self.reflection_and_absorption_coefficient(self.z)
-        return alpha.reshape((len(alpha),))
-
-    @property
-    def first_peak(self):
-        """Return the frequency in Hz and the absorption coefficient of the first absorption peak."""
-        idx_array = np.diff(np.sign(np.diff(self.alpha))).nonzero()[0]
-        return (self.freq[idx_array[0]] if idx_array.size > 0 else max(self.freq),
-                self.alpha[idx_array[0]] if idx_array.size > 0 else max(self.freq))
-
-    @property
-    def scat(self):
-        """Return scattering coefficient (given by material_model only)."""
-        if self._scat is not None:
-            return self._scat
-        else:
-            return np.zeros_like(self.freq)
-
-    @scat.setter
-    def scat(self, new_scat):
-        """Set scattering coefficient."""
-        self._scat = new_scat
-
-    @property
-    def z_norm(self):
-        """Return normalized surface impedance."""
-        return self.z / self.z0
-
-    @property
     def y_norm(self):
-        """Return normalized surface admittance."""
         return 1 / self.z_norm
 
-    @property
-    def incidence(self):
-        """Return incidence."""
-        return self._incidence
-
-    @property
-    def incidence_angle(self):
-        """Return incidence angle values."""
-        if self.incidence == "diffuse":
-            return np.linspace(self._incidence_angle[0] + 0.01, self._incidence_angle[1] - 0.01,
-                               int((self._incidence_angle[1] - self._incidence_angle[0]) / self._incidence_angle[2]))
-        elif self.incidence == "normal":
-            return np.linspace(0, 1, 1)
-        elif self.incidence == "angle":
-            return np.linspace(self._incidence_angle[0], self._incidence_angle[0] + 1, 1)
-
-    @property
-    def matrix(self):
-        """Return transfer matrix dictionary."""
-        return self._matrix
-
-    @matrix.setter
-    def matrix(self, new_matrix):
-        """Set transfer matrix dictionary."""
-        self._matrix = new_matrix
-
-    @property
-    def color(self):
-        """Return color string."""
-        return self._color
-
-    @color.setter
-    def color(self, new_color):
-        """Set color string."""
-        self._color = new_color
-
-    @property
-    def project_folder(self):
-        """Return project folder."""
-        if self._project_folder is not None:
-            return self._project_folder
-        else:
-            return os.getcwd()
-
-    @project_folder.setter
-    def project_folder(self, new_folder):
-        """Set project folder."""
-        self._project_folder = new_folder
-
-    @property
-    def filename(self):
-        """Return filename string."""
-        if self._filename is not None:
-            return self._filename
-        else:
-            return "TMM"
-
-    @property
-    def display_name(self):
-        """Return optional display name string."""
-        return self._display_name
-
-    @filename.setter
-    def filename(self, new_filename):
-        """Set filename."""
-        self._filename = new_filename
-
-    def reflection_and_absorption_coefficient(self, zs):
+    def plot(self, figsize=(15, 5), plots=['alpha', 'z', 'y'], saveFig=False, filename='TMM', timestamp=True,
+             ext='.png'):
         """
-        Calculate reflection coefficient and absorption coefficient for a given surface impedance.
-        Parameters
-        ----------
-        zs : array
-            Surface impedance.
-        Returns
-        -------
-        Reflection coefficient and absorption coefficient arrays.
+        Displays device information.
         """
-        r = (zs - self.z0) / (zs + self.z0)
-        alpha = 1 - np.abs(r) ** 2
 
-        return r, alpha
+        fig = plt.figure(figsize=figsize)
+        gs = gridspec.GridSpec(1, len(plots))
 
-    def alpha_angle(self, angle_idx=0):
-        """
-        Return angle-dependent absorption coefficient.
-        Parameters
-        ----------
-        angle_idx : int, optional
-            Positional index of the desired angle in 'self.incidence_angle'.
-        Returns
-        -------
-        Angle-dependent absorption coefficient.
-        """
-        _, alpha = self.reflection_and_absorption_coefficient(self.z_angle[:, angle_idx])
+        i = 0
+        if 'z' in plots or 'Z' in plots:
+            ax_z = plt.subplot(gs[0, i])
+            ax_z.set_title(r'Impedance ($Z$)')
+            ax_z.set_xlabel('Frequency [Hz]')
+            ax_z.set_ylabel('Normalized Surface Impedance [Pa*s/m]')
+            ax_z.semilogx(self.freq, np.real(self.z_norm), linewidth=2, label='Real')
+            ax_z.semilogx(self.freq, np.imag(self.z_norm), linewidth=2, label='Imag')
+            ax_z.set_xlim([(np.min(self.freq)), (np.max(self.freq))])
+            ax_z.axhline(y=0, color='k', linewidth=0.5)
+            ax_z.axhline(y=1, linestyle='--', color='gray')
+            ax_z.legend(loc='best')
+            ax_z.get_xaxis().set_major_formatter(ticker.ScalarFormatter())  # Remove scientific notation from xaxis
+            ax_z.get_xaxis().set_minor_formatter(ticker.ScalarFormatter())  # Remove scientific notation from xaxis
+            ax_z.tick_params(which='minor', length=5, rotation=-90,
+                             axis='x')  # Set major and minor ticks to same length
+            ax_z.tick_params(which='major', length=5, rotation=-90,
+                             axis='x')  # Set major and minor ticks to same length
+            ax_z.minorticks_on()  # Set major and minor ticks to same length
+            ax_z.grid('minor')
+            i += 1
 
-        return alpha
+        if 'y' in plots or 'Y' in plots:
+            ax_y = plt.subplot(gs[0, i])
+            ax_y.set_title(r'Admittance ($Y$)')
+            ax_y.set_xlabel('Frequency [Hz]')
+            ax_y.set_ylabel('Normalized Surface Admittance [m/Pa*s]')
+            ax_y.semilogx(self.freq, np.real(self.y_norm), linewidth=2, label='Real')
+            ax_y.semilogx(self.freq, np.imag(self.y_norm), linewidth=2, label='Imag')
+            ax_y.set_xlim([(np.min(self.freq)), (np.max(self.freq))])
+            ax_y.axhline(y=0, color='k', linewidth=0.5)
+            ax_y.axhline(y=1, linestyle='--', color='gray')
+            ax_y.legend(loc='best')
+            ax_y.get_xaxis().set_major_formatter(ticker.ScalarFormatter())  # Remove scientific notation from xaxis
+            ax_y.get_xaxis().set_minor_formatter(ticker.ScalarFormatter())  # Remove scientific notation from xaxis
+            ax_y.tick_params(which='minor', length=5, rotation=-90,
+                             axis='x')  # Set major and minor ticks to same length
+            ax_y.tick_params(which='major', length=5, rotation=-90,
+                             axis='x')  # Set major and minor ticks to same length
+            ax_y.minorticks_on()  # Set major and minor ticks to same length
+            ax_y.grid('minor')
+            i += 1
 
-    def equivalent_fluid_model(self, sigma, model="mac", fibre_type=1):
-        """
-        Calculates the wavenumber (kc) and characteristic impedance (zc) using models of equivalent fluids that
-        represent porous materials. For limitations and applications see the references at each section below.
-        Parameters
-        ----------
-        sigma : int
-            Flow resistivity of the porous material [k*Pa*s/m²]
-        model : string, optional
-            Name of the empirical model.
-        fibre_type : int, optional
-            Fibre type for Mechel and Grundmann model. 1 for basalt or rock wool and  2  for glass fibre.
-        Returns
-        -------
-        Propagation constant array and characteristic acoustic impedance array.
-        """
-        coefficients = {  # List of coefficients for each available model
-            "db": [0.0978, 0.7, 0.189, 0.595, 0.0571, 0.754, 0.087, 0.732],  # Delaney-Bazley
-            "miki": [0.122, 0.618, 0.18, 0.618, 0.079, 0.632, 0.12, 0.632],  # Miki
-            "qunli": [0.188, 0.554, 0.163, 0.592, 0.209, 0.548, 0.105, 0.607],  # Qunli
-            "mechel_gf_lowX": [0.135, 0.646, 0.396, 0.458, 0.0688, 0.707, 0.196, 0.549],  # Mechel, glass fiber, low X
-            "mechel_gf_highX": [0.102, 0.705, 0.179, 0.674, 0.0235, 0.887, 0.0875, 0.77],  # Mechel, glass fiber, high X
-            "mechel_rf_lowX": [0.136, 0.641, 0.322, 0.502, 0.081, 0.699, 0.191, 0.556],  # Mechel, rock fiber, low X
-            "mechel_rf_highX": [0.103, 0.716, 0.179, 0.663, 0.0563, 0.725, 0.127, 0.655],  # Mechel, rock fiber, high X
-            "komatsu": [0.0004, -6.2, 0.0069, -4.1, 0.00027, -6.2, 0.0047, -4.1],  # Komatsu
-            "mac": [0.0982, 0.685, 0.288, 0.526, 0.0729, 0.66228, 0.187, 0.5379],  # Modified Allard and Champoux
-        }
-
-        if model in coefficients.keys():
-            """
-            Empirical models based on linear regressions. For information about the applicability of each model see
-            Table 2-10 at https://doc.comsol.com/5.5/doc/com.comsol.help.aco/aco_ug_pressure.05.144.html.
-            Based on the findings in Sound absorption of porous materials – Accuracy of prediction methods
-            by David Oliva & Valtteri Hongisto (2013) and implemented with the Equations 6.9 and 6.10 of 
-            chapter 6.5.1 in the book Acoustic Absorbers and Diffusers (3rd Edition) by Trevor Cox and Peter D'Antonio.
-            """
-            c = coefficients[model]
-            X = self.rho0 * self.freq / sigma
-            kc = self.k0 * (1 + c[0] * X ** -c[1] - 1j * c[2] * X ** -c[3])  # Wavenumber
-            zc = self.z0 * (1 + c[4] * X ** -c[5] - 1j * c[6] * X ** -c[7])  # Characteristic impedance
-
-        elif model == "wilson":
-            """
-            Wilson's equivalent to Delaney and Bazley model from relaxation model available in 
-            Acoustic Absorbers and Diffusers by Trevor Cox and Peter D'Antonio (3rd Edition).
-            Equations 6.35 and 6.36 using simplifications detailed below.
-            """
-            X = self.rho0 * self.freq / sigma  # Dimensionless quantity
-            omega = 1
-            gamma = 1.4  # Ratio of specific heats
-            q = 1
-            zc = self.z0 * (q / omega) / np.sqrt(
-                (1 + (gamma - 1) / np.sqrt(1 + 1j * 19 * X)) * (1 - 1 / np.sqrt(1 + 1j * 13 * X)))
-            kc = (q * self.k0) * np.sqrt(
-                (1 + (gamma - 1) / np.sqrt(1 + 1j * 19 * X)) / (1 - 1 / np.sqrt(1 + 1j * 13 * X)))
-
-        elif model == "mechel_grundmann" or model == "mg":
-            """
-            Mechel and Grundmann formulations - Equation 6.12 in  Acoustic Absorbers and Diffusers by 
-            Trevor Cox and Peter D'Antonio (3rd Edition).
-            """
-            if fibre_type == 1:
-                betak = [-0.00355757 - 1j * 0.0000164897, 0.421329 + 1j * 0.342011, -0.507733 + 1j * 0.086655,
-                         -0.142339 + 1j * 1.25986, 1.29048 - 1j * 0.0820811, -0.771857 - 1j * 0.668050]
-
-                betaz = [0.0026786 + 1j * 0.00385761, 0.135298 - 1j * 0.394160, 0.946702 + 1j * 1.47653,
-                         -1.45202 - 1j * 4.56233, 4.03171 + 1j * 7.56031, -2.86993 - 1j * 4.90437]
-
-            elif fibre_type == 2:
-                betak = [-0.00451836 + 1j * 0.000541333, 0.421987 + 1j * 0.376270, -0.383809 - 1j * 0.353780,
-                         -0.610867 + 1j * 2.59922, 1.13341 - 1j * 1.74819, 0]
-
-                betaz = [-0.00171387 + 1j * 0.00119489, 0.283876 - 1j * 0.292168, -0.463860 + 1j * 0.188081,
-                         3.12736 + 1j * 0.941600, -2.10920 - 1j * 1.32398, 0]
+        if 'alpha' in plots or 'abs' in plots:
+            ax_a = plt.subplot(gs[0, i])
+            ax_a.set_title(r'Absorption Coefficient ($\alpha$)')
+            ax_a.set_xlabel('Frequency [Hz]')
+            ax_a.set_ylabel('Absorption Coefficient [-]')
+            if self.incidence == 'diffuse':
+                ax_a.semilogx(self.freq, self.alpha, linewidth=2,
+                              label=f'Diffuse Incidence ' +
+                                    f'({min(self.incidence_angle):0.0f}° - {max(self.incidence_angle):0.0f}°)')
+                ax_a.semilogx(self.freq, self.alpha_normal, linewidth=2, label='Normal Incidence', linestyle=':')
             else:
-                betaz = []
-                print("Choose fibre type  between 1 (basalt or rock wool) or  2 (glass fibre).")
+                ax_a.semilogx(self.freq, self.alpha, linewidth=2)
+            abs_value, idx = find_nearest(self.alpha, max(self.alpha))
+            ax_a.axvline(x=self.freq[idx], label=f'Max. abs. at {self.freq[idx]} Hz', linestyle='--', color='green')
+            ax_a.set_xlim([(np.min(self.freq)), (np.max(self.freq))])
+            ax_a.set_ylim([-0.1, 1.1])
+            ax_a.legend(loc='best')
+            ax_a.axhline(y=0, color='k', linewidth=0.5)
+            ax_a.axhline(y=1, linestyle='--', color='gray')
+            ax_a.get_xaxis().set_major_formatter(ticker.ScalarFormatter())  # Remove scientific notation from xaxis
+            ax_a.get_xaxis().set_minor_formatter(ticker.ScalarFormatter())  # Remove scientific notation from xaxis
+            ax_a.tick_params(which='minor', length=5, rotation=-90,
+                             axis='x')  # Set major and minor ticks to same length
+            ax_a.tick_params(which='major', length=5, rotation=-90,
+                             axis='x')  # Set major and minor ticks to same length
+            ax_a.minorticks_on()  # Set major and minor ticks to same length
+            ax_a.grid('minor')
+            i += 1
 
-            # Calculate impedance of porous material
-            X = self.rho0 * self.freq / sigma  # Dimensionless quantity
+        gs.tight_layout(fig, pad=4, w_pad=1, h_pad=1)
 
-            # Mechel Grundmann
-            kc = -1j * self.k0 * (betak[0] * X ** -1 + betak[1] * X ** -0.5 + betak[2] + betak[3] * X ** 0.5 +
-                                  betak[4] * X + betak[5] * X ** 1.5)
-            zc = self.z0 * (betaz[0] * X ** -1 + betaz[1] * X ** -0.5 + betaz[2] + betaz[3] * X ** 0.5 +
-                            betaz[4] * X + betaz[5] * X ** 1.5)
-        else:
-            available_models = [key for key in coefficients.keys()]
-            available_models.append("wilson")
-            available_models.append("mechel_grundmann")
-            raise NameError("Unidentified model. Choose between the available models: ", available_models)
+        if saveFig:
+            timestr = time.strftime("%Y%m%d-%H%M_")
+            if self.project_folder is None:
+                full_path = outputs + filename + ext
+                if timestamp is True:
+                    full_path = outputs + timestr + filename + ext
+            else:
+                folderCheck = os.path.exists(self.project_folder + '\\Treatments')
+                if folderCheck is False:
+                    os.mkdir(self.project_folder + '\\Treatments')
+                full_path = self.project_folder + '\\Treatments\\' + filename + ext
+                if timestamp is True:
+                    full_path = self.project_folder + '\\Treatments\\' + timestr + filename + ext
+
+                plt.savefig(full_path, dpi=100)
+                print('Image saved to ', full_path)
+        plt.show()
+
+    def delany_bazley(self, sigma, warnings=1):
+        """
+        Calculates the wavenumber (k) and characteristic impedance (zc) using the Delaney and Bazley formulations.
+        Acousic Absorbers and Diffusers by Trevor Cox and Peter D'Antonio
+        Eqs 5.7-5.9, 3rd Ed
+
+        Inputs:
+         - sigma: flow resistivity [rayls/m]
+        - warnings: display (1) or don't display (0) warnings about limitations of empirical formulation
+        """
+        # X = self.rho0 * self.freq / sigma  # Dimensionless quantity for Delany and Bazley
+        # zc = self.z0 * (1 + 0.0571 * (X ** -0.754) - 1j * 0.087 * (X ** -0.732))  # Characteristic impedance
+        # kc = (2 * np.pi / self.c0) * self.freq * (1 + 0.0978 * (X ** -0.700) - 1j * 0.189 * (X ** -0.595))  # Wavenumber
+
+        X = self.rho0 * self.freq / sigma
+        # c = [0.0495, -0.754, -0.0754, -0.732, 0.0848, -0.700, -0.164, -0.595]
+        c = [0.0571, -0.754, -0.087, -0.732, 0.0978, -0.700, -0.189, -0.595]  # db
+        zc = self.z0 * (1 + c[0] * X ** c[1] + 1j * c[2] * X ** c[3])
+        kc = self.k0 * (1 + c[4] * X ** c[5] + 1j * c[6] * X ** c[7])
+
+        # Warnings
+        if warnings == 1:
+            if min(X) < 0.01:
+                print(f'X = {min(X)} too small')
+            if max(X) > 1:
+                print(f'X = {max(X)} too large')
+            if sigma < 1000:
+                print(f'Flow resistivity = {sigma} too small')
+            if sigma > 50000:
+                print(f'Flow resistivity = {sigma} too large')
+
+        return kc, zc
+    def PET(self, sigma):
+        """
+        Calculates the wavenumber (k) and characteristic impedance (zc) using the Delaney and Bazley formulations.
+        Acousic Absorbers and Diffusers by Trevor Cox and Peter D'Antonio
+        Eqs 5.7-5.9, 3rd Ed
+
+        Inputs:
+         - sigma: flow resistivity [rayls/m]
+        - warnings: display (1) or don't display (0) warnings about limitations of empirical formulation
+        """
+        # X = self.rho0 * self.freq / sigma  # Dimensionless quantity for Delany and Bazley
+        # zc = self.z0 * (1 + 0.0571 * (X ** -0.754) - 1j * 0.087 * (X ** -0.732))  # Characteristic impedance
+        # kc = (2 * np.pi / self.c0) * self.freq * (1 + 0.0978 * (X ** -0.700) - 1j * 0.189 * (X ** -0.595))  # Wavenumber
+
+        X = self.rho0 * self.freq / sigma
+        # c = [0.0495, -0.754, -0.0754, -0.732, 0.0848, -0.700, -0.164, -0.595]
+        c = [0.078, 0.623, 0.074, 0.660, 0.159, 0.571, 0.121, 0.530]  # db
+
+        zr = self.z0*(1+c[0]*X**(-c[1]))
+        zi = -self.z0*(c[2]*X**(-c[3]))
+        
+        kcr = (self.w0/self.c0)*(c[4]*X**(-c[5]))
+        kci = (self.w0/self.c0)*(1+c[6]*X**(-c[7]))
+        
+        # cc = self.c0/(1 + c[0] * X ** c[1] - 1j * c[2] * X ** -c[3])
+        # pc = self.z0/cc * (1 + c[4] * X ** -c[5] - 1j * c[6] * X ** -c[7])
+        
+        # kc = 2*np.pi*self.freq/cc
+        # zc = (cc*pc)
+        
+        kc = kcr - 1j*kci
+        zc = zr - 1j*zi
 
         return kc, zc
 
-    def porous_layer(self, sigma=27, t=5, model="mac", fibre_type=1, layer=None):
+    def miki(self, sigma):
+        """
+        Calculates the wavenumber (k) and characteristic impedance (zc) using Miki's model.
+        Guideline for Adopting the Local Reaction Assumption for Porous Absorbers
+        in Terms of Random Incidence Absorption Coefficients by Cheol-Ho Jeong
+        Eqs. 5a and 5b
+
+        Inputs:
+         - sigma: flow resistivity [rayls/m]
+        """
+
+        # zc = self.z0 * (1 + 0.070 * (self.freq / sigma) ** -0.632 - 1j * 0.107 * (self.freq / sigma) ** -0.632)
+        # kc = self.k0 * (1 + 0.109 * (self.freq / sigma) ** -0.618 - 1j * 0.160 * (self.freq / sigma) ** -0.618)
+        C1=0.122
+        C2=0.618
+        C3=0.18
+        C4=0.618
+        C5=0.079
+        C6=0.632
+        C7=0.12
+        C8=0.632
+        X = self.freq*self.rho0/sigma
+        cc = self.c0/(1+C1*np.power(X,-C2) -1j*C3*np.power(X,-C4))
+        rhoc = (self.rho0*self.c0/cc)*(1+C5*np.power(X,-C6)-1j*C7*np.power(X,-C8))
+        
+        zc = cc*rhoc
+        kc = 2*np.pi*self.freq/cc
+        
+        
+        return kc, zc
+
+    def allard_champoux(self, sigma,warnings=0):
+        """
+        Calculates the wavenumber (k) and characteristic impedance (zc) using Modiefied Allard & Champoux model.
+        New empirical equations for sound propagation in rigid frame fibrous materials
+        by Jean-F. Allard & Yvan Champoux 
+        Eqs. 5,6,7,8
+
+        Inputs:
+         - sigma: flow resistivity [rayls/m]
+        """
+        
+        X = self.rho0 * self.freq / sigma
+        # c = [0.0495, -0.754, -0.0754, -0.732, 0.0848, -0.700, -0.164, -0.595]
+        c = [0.0982, 0.685, 0.288, 0.526, 0.0729, 0.66228, 0.187, 0.5379]  # allard_champoux_modified
+        cc = self.c0/(1 + c[0] * X ** c[1] - 1j * c[2] * X ** -c[3])
+        pc = self.z0/cc * (1 + c[4] * X ** -c[5] - 1j * c[6] * X ** -c[7])
+        
+        kc = 2*np.pi*self.freq/cc
+        zc = (cc*pc)
+        
+        # Warnings
+        if warnings == 1:
+            if min(self.freq) < 45:
+                print(f'X = {min(self.freq)} too small')
+            if max(self.freq) > 11e3:
+                print(f'X = {max(self.freq)} too large')
+
+        return kc, zc
+
+    def mechel_grundmann(self, sigma, fibre_type, warnings=1):
+        '''
+        Calculates the wavenumber (kc) and characteristic impedance (zc) using the Mechel and Grundmann formulations
+        Acoustic Absorbers and Diffusers by Trevor Cox and Peter D'Antonio
+        Eqs. 5.10, 3rd edition
+
+        Inputs:
+         - sigma: flow resistivity [rayls/m]
+         - fibre_type: int, chosses bewtween available fibre types
+                       1 = basalt or rock wool; 2 = glass fibre
+        - warnings: display (1) or don't display (0) warnings about limitations of empirical formulation
+        '''
+
+        if fibre_type == 1:
+            betak = [-0.00355757 - 1j * 0.0000164897, 0.421329 + 1j * 0.342011, -0.507733 + 1j * 0.086655,
+                     -0.142339 + 1j * 1.25986, 1.29048 - 1j * 0.0820811, -0.771857 - 1j * 0.668050]
+
+            betaz = [0.0026786 + 1j * 0.00385761, 0.135298 - 1j * 0.394160, 0.946702 + 1j * 1.47653,
+                     -1.45202 - 1j * 4.56233, 4.03171 + 1j * 7.56031, -2.86993 - 1j * 4.90437]
+
+        elif fibre_type == 2:
+            betak = [-0.00451836 + 1j * 0.000541333, 0.421987 + 1j * 0.376270, -0.383809 - 1j * 0.353780,
+                     -0.610867 + 1j * 2.59922, 1.13341 - 1j * 1.74819, 0]
+
+            betaz = [-0.00171387 + 1j * 0.00119489, 0.283876 - 1j * 0.292168, -0.463860 + 1j * 0.188081,
+                     3.12736 + 1j * 0.941600, -2.10920 - 1j * 1.32398, 0]
+        else:
+            print('Choose fibre type  between 1 (basalt or rock wool) or  2 (glass fibre).')
+
+        # Calculate impedance of porous material
+        X = self.rho0 * self.freq / sigma  # Dimensionless quantity
+
+        # Mechel Grundmann
+        kc = -1j * self.k0 * (betak[0] * X ** -1 + betak[1] * X ** -0.5 + betak[2] + betak[3] * X ** 0.5 +
+                              betak[4] * X + betak[5] * X ** 1.5)
+        zc = self.z0 * (betaz[0] * X ** -1 + betaz[1] * X ** -0.5 + betaz[2] + betaz[3] * X ** 0.5 +
+                        betaz[4] * X + betaz[5] * X ** 1.5)
+
+        # Warnings
+        if warnings == 1:
+            if min(X) < 0.003:
+                print(f'X = {min(X)} too small')
+            if max(X) > 0.4:
+                print(f'X = {max(X)} too large')
+
+        return kc, zc
+
+    def wilson(self, sigma):
+        '''
+        Calculates the wavenumber (kc) and characteristic impedance (zc) using the Wilson's equivalent to
+        Delaney and Bazley model from relaxation model.
+        Acoustic Absorbers and Diffusers by Trevor Cox and Peter D'Antonio
+        Eqs. 5.22-5.33 using simplifications detailed below, 3rd edition
+
+        Inputs:
+         - sigma: flow resistivity [rayls/m]
+        '''
+
+        X = self.rho0 * self.freq / sigma  # Dimensionless quantity
+        omega = 1
+        gamma = 1.4  # Ratio of specific heats
+        q = 1
+        zc = self.z0 * (q / omega) / np.sqrt(
+            (1 + (gamma - 1) / np.sqrt(1 + 1j * 19 * X)) * (1 - 1 / np.sqrt(1 + 1j * 13 * X)))
+        kc = (q * self.k0) * np.sqrt((1 + (gamma - 1) / np.sqrt(1 + 1j * 19 * X)) / (1 - 1 / np.sqrt(1 + 1j * 13 * X)))
+
+        return kc, zc
+
+    def komatsu(self, sigma):
+        """
+        Komatsu model based on the description of "Combined Wave and Ray Based Room Acoustic Simulation of Small Rooms"
+        by Marc Aretz, page 85.
+        Eqs. 7.12 and 7.13
+
+        Inputs:
+         - sigma: flow resistivity [rayls/m]
+        """
+        # Not working god knows why
+
+        E = (self.freq / sigma)
+        zc = self.z0 * (1 + 0.00027 * (2 - np.log10(E)) ** 6.2 - 1j * 0.0047 * (2 - np.log10(E)) ** 4.1)
+        kc = self.k0 * (0.0069 * (2 - np.log10(E)) ** 4.1 + 1j * (1 + 0.0004 * (2 - np.log10(E)) ** 6.2))
+
+        X = 2 - np.log10(self.freq / sigma)
+
+        c = [0.00027, 6.2, -0.0047, 4.1, 0.0069, 4.1, 0.0004, 6.2]  # komatsu
+
+        zc = self.z0 * (1 + c[0] * X ** c[1] + 1j * c[2] * X ** c[3])
+        kc = self.k0 * (c[4] * X ** c[5] + 1j * (1 + c[6] * X ** c[7]))
+
+        return kc, zc
+
+    def reflection_and_absorption_coefficient(self, zs):
+        """
+        Calculate reflection coefficient (R) and absorption coefficient (alpha)
+        for a given surface impedance zs.
+        Acoustic Absorbers and Diffusers by Trevor Cox and Peter D'Antonio
+        Eqs. from Chapter 1
+        """
+
+        R = (zs - self.z0) / (zs + self.z0)  # Reflection coefficient
+        alpha = 1 - np.abs(R) ** 2  # Absorption coefficient
+
+        return R, alpha
+
+    def porous_layer(self, sigma=27, t=5, model='miki', layer=None,
+                     model_params={'warnings': 1, 'fibre_type': 2}):
         """
         Adds a layer of porous material to the existing device.
-        Parameters
-        ----------
-        sigma : float or int, optional
-            Flow resistivity of the porous material [k*Pa*s/m²]
-        t : float or int, optional
-            Thickness of the porous material [mm]
-        model : string, optional
-            Name of the empirical model.
-        fibre_type : int , optional
-            Fibre type for Mechel and Grundmann model. 1 for basalt or rock wool and  2  for glass fibre.
-        layer : None or int, optional
-            Optional value to choose the layer level. If None is passed the layer will be adding to the existing ones.
+
+        Inputs:
+         - layer: int or None, determines the layer number; If None is passed the layer
+                  will be determined from the existing layers
+         - t: layer thickness [mm]
+         - sigma: flow resistivity [k*Pa*s/m²]
+         - model: str, chooses between the available equivalent homogenous fluid models
+         - model_params: dict containing extra parameters for each model (if needed)
+         - incidence_angle: not implemented yet
         """
+
         # Adjusting units
         t_meters = t / 1000  # Convert millimeters to meters
         sigma_k = sigma * 1000  # Convert to kilo rayls/m
 
-        kc, zc = self.equivalent_fluid_model(sigma_k, model=model, fibre_type=fibre_type)
+        if model == 'miki':
+            kc, zc = self.miki(sigma_k)
+        elif model == 'db':
+            kc, zc = self.delany_bazley(sigma_k, warnings=model_params['warnings'])
+        elif model == 'komatsu':
+            kc, zc = self.komatsu(sigma_k)
+        elif model == 'wilson':
+            kc, zc = self.wilson(sigma_k)
+        elif model == 'mg' or model == 'mechel':
+            kc, zc = self.mechel_grundmann(sigma_k, fibre_type=model_params['fibre_type'],
+                                           warnings=model_params['warnings'])
+        elif model == 'mac' or model == 'allard':
+            kc, zc = self.allard_champoux(sigma_k)
+        elif model == 'pet' or model == 'PET' or model == 'polyester':
+            kc, zc = self.PET(sigma_k)
 
-        kc = matlib.repmat(kc, len(self.incidence_angle), 1).T
-        zc = matlib.repmat(zc, len(self.incidence_angle), 1).T
+        kc = numpy.matlib.repmat(kc, len(self.incidence_angle), 1).T
+        #         kc = np.sqrt(kc_angle ** 2 - kc_angle **2 * np.sin(np.deg2rad(self.incidence_angle)))
+        zc = numpy.matlib.repmat(zc, len(self.incidence_angle), 1).T
 
         Tp = np.array([[np.cos(kc * t_meters), 1j * zc / self.s0 * np.sin(kc * t_meters)],
                        [1j * self.s0 / zc * np.sin(kc * t_meters), np.cos(kc * t_meters)]])
@@ -455,31 +494,63 @@ class TMM:
         if layer is None:
             layer = len(self.matrix)
 
-        self.matrix[layer] = {"type": "porous_layer",
-                              "flow_resistivity [k*Pa*s/m²]": sigma,
-                              "thickness [mm]": t,
-                              "model": model,
-                              # "kc": kc,
-                              # "zc": zc,
-                              "matrix": Tp,
+        self.matrix[layer] = {'type': 'porous_layer',
+                              'flow_resistivity [k*Pa*s/m²]': sigma,
+                              'thickness [mm]': t,
+                              'model': model,
+                              'matrix': Tp,
                               }
+    def porous_domain(self, sigma=27, model='miki',
+                     model_params={'warnings': 1, 'fibre_type': 2}):
+        """
+        Adds a domain of porous material to the existing device.
 
-    def air_layer(self, t=5, layer=None):
+        Inputs:s
+         - sigma: flow resistivity [k*Pa*s/m²]
+         - model: str, chooses between the available equivalent homogenous fluid models
+         - model_params: dict containing extra parameters for each model (if needed)
+         - incidence_angle: not implemented yet
+        """
+
+        # Adjusting units
+         # Convert millimeters to meters
+        sigma_k = sigma * 1000  # Convert to kilo rayls/m
+
+        if model == 'miki':
+            kc, zc = self.miki(sigma_k)
+        elif model == 'db':
+            kc, zc = self.delany_bazley(sigma_k, warnings=model_params['warnings'])
+        elif model == 'komatsu':
+            kc, zc = self.komatsu(sigma_k)
+        elif model == 'wilson':
+            kc, zc = self.wilson(sigma_k)
+        elif model == 'mg' or model == 'mechel':
+            kc, zc = self.mechel_grundmann(sigma_k, fibre_type=model_params['fibre_type'],
+                                           warnings=model_params['warnings'])
+        elif model == 'mac' or model == 'allard':
+            kc, zc = self.allard_champoux(sigma_k)
+        elif model == 'pet' or model == 'PET' or model == 'polyester':
+            kc, zc = self.PET(sigma_k)
+
+        self.cc = (2*np.pi*self.freq)/kc
+        self.rhoc = zc/self.cc
+
+    def air_layer(self, layer=None, t=5):
         """
         Adds an air layer to the existing device.
-        Parameters
-        ----------
-        t : float or int, optional
-            Thickness of the air layer [mm]
-        layer : None or int, optional
-            Optional value to choose the layer level. If None is passed the layer will be adding to the existing ones.
+
+        Inputs:
+         - layer: int or None, determines the layer number; If None is passed the layer
+                  will be determined from the existing layers
+         - t: layer thickness [mm]
         """
+
         # Adjusting units
         t_meters = t / 1000  # Convert millimeters to meters
 
-        k0 = matlib.repmat(self.k0, len(self.incidence_angle), 1).T
+        k0 = numpy.matlib.repmat(self.k0, len(self.incidence_angle), 1).T
         k0 = np.sqrt(k0 ** 2 - k0 ** 2 * np.sin(np.deg2rad(self.incidence_angle)))
-        z0 = matlib.repmat(self.z0, len(self.incidence_angle), 1).T
+        z0 = numpy.matlib.repmat(self.z0, len(self.incidence_angle), 1).T
 
         Ta = np.array([[np.cos(k0 * t_meters), 1j * z0 / self.s0 * np.sin(k0 * t_meters)],
                        [1j * self.s0 / z0 * np.sin(k0 * t_meters), np.cos(k0 * t_meters)]])
@@ -487,28 +558,34 @@ class TMM:
         if layer is None:
             layer = len(self.matrix)
 
-        self.matrix[layer] = {"type": "air_layer",
-                              "thickness [mm]": t,
-                              "matrix": Ta,
+        self.matrix[layer] = {'type': 'air_layer',
+                              'thickness [mm]': t,
+                              'matrix': Ta,
                               }
 
-    def membrane_layer(self, t=1, rho=8050, layer=None):
+    def membrane_layer(self, layer=None, t=1, rho=8050):
         """
-        Adds a membrane to the existing device.
-        Parameters
-        ----------
-        t : float or int, optional
-            Thickness of the membrane [mm]
-        rho : float or int, optional
-            Material density [kg/m³]
-        layer : None or int, optional
-            Optional value to choose the layer level. If None is passed the layer will be adding to the existing ones.
+        Adds a stiff membrane to the existing device.
+
+        Inputs:
+         - layer: int or None, determines the layer number; If None is passed the layer
+                  will be determined from the existing layers
+         - t: layer thickness [mm]
+         - rho: material density [kg/m³]
+
         """
         # Adjusting units
         t_meters = t / 1000  # Convert millimeters to meters
 
+        k0_angle = numpy.matlib.repmat(self.k0, len(self.incidence_angle), 1).T
+        w0_angle = numpy.matlib.repmat(self.w0, len(self.incidence_angle), 1).T
+        kt = k0_angle * np.sin(np.deg2rad(self.incidence_angle))
+        zc_elastic = 1j * w0_angle * rho * (1 - (t * kt ** 4) / (w0_angle ** 2 * rho))
+
         zc = 1j * self.w0 * rho * t_meters / self.s0
-        zc = matlib.repmat(zc, len(self.incidence_angle), 1).T
+        zc = numpy.matlib.repmat(zc, len(self.incidence_angle), 1).T
+
+        #         print(np.shape(zc))
 
         ones = np.ones_like(self.freq, shape=(len(self.freq), len(self.incidence_angle)))
         zeros = np.zeros_like(self.freq, shape=(len(self.freq), len(self.incidence_angle)))
@@ -519,71 +596,52 @@ class TMM:
         if layer is None:
             layer = len(self.matrix)
 
-        self.matrix[layer] = {"type": "membrane_layer",
-                              "thickness [mm]": t,
-                              "density [kg/m³]": rho,
-                              "matrix": Tm,
+        self.matrix[layer] = {'type': 'membrane_layer',
+                              'thickness [mm]': t,
+                              'density [kg/m³]': rho,
+                              'matrix': Tm,
                               }
 
-    def perforated_panel_layer(self, t=19, d=8, s=16, rho=None, end_correction="jb", method="barrier", layer=None):
+    def perforated_panel_layer(self, layer=None, t=19, d=8, s=16, end_correction='nesterov', method='barrier'):
         """
         Adds a plate with circular perforations to the existing device.
-        Parameters
-        ----------
-        t : float or int, optional
-            Thickness of the perforated plate [mm]
-        d : float or int, optional
-            Hole diameter [mm]
-        s : float or int, optional
-            Hole spacing from the center of one hole to the next [mm]
-        rho : float, int or None, optional
-            Plate density [kg/m3] - if 'None' is passed than a fully rigid plate is assumed.
-        end_correction : string, optional
-            Chooses between the available end corrections for the tube length.
-        method : string, optional
-            Chooses between the available methods to calculate the perforated plate impedance.
-        layer : None or int, optional
-            Optional value to choose the layer level. If None is passed the layer will be adding to the existing ones.
+
+        Inputs:
+         - layer: int or None, determines the layer number; If None is passed the layer
+                  will be determined from the existing layers
+         - t: layer thickness [mm]
+         - d: hole diameter [mm]
+         - s: hole spacing from the center of one hole to the next [mm]
+         - end_correction: str, chooses between the available end corrections for the tube length
         """
+
         # Adjusting units
         t_meters = t / 1000  # Convert millimeters to meters
         d_meters = d / 1000
         s_meters = s / 1000
 
         if d < 2 / s:
-            print(f"WARNING: Hole spacing too small for {d} [mm] hole diameter.")
+            print(f'WARNING: Hole spacing too small for {d} [mm] hole diameter.')
 
         open_area = np.pi / (s_meters / (d_meters / 2)) ** 2
+        #         print(f'Perforated panel open area: {open_area * 100:0.2f} [%]')
 
-        t_corr = None
-        if end_correction == "nesterov":
+        if end_correction == 'nesterov':
             # Acoustic Absorbers and Diffusers by Trevor Cox and Peter D'Antonio
-            # Circular holes in circular pattern
-            delta = 0.8 * (1 - 1.47 * open_area ** (1/2) + 0.47 * open_area ** 1.5)
+            delta = 0.8 * (1 - 1.47 * open_area ** 0.5 + 0.47 * open_area ** 1.5)
             t_corr = 2 * delta * d_meters / 2 + t_meters
-        elif end_correction == "jaouen_becot" or end_correction == "jb":
-            # Acoustic Absorbers and Diffusers by Trevor Cox and Peter D'Antonio
-            # Circular holes in square pattern
-            delta = 0.8 * (1 - 1.13 * open_area ** (1/2) - 0.09 * open_area + 0.27 * open_area ** (3/2))
-            t_corr = 2 * delta * d_meters / 2 + t_meters
-        elif end_correction == "beranek":
+        elif end_correction == 'beranek':
             # Leo Beranek - Acoustics
             t_corr = t_meters + 0.85 * d_meters
-        vis = self.air_prop["air_viscosity"]
 
-        Tp = None
-        if method == "barrier":
-            """
-            Impedance from section 7.3.1 of  Acoustic Absorbers and Diffusers 
-            by Trevor Cox and Peter D'Antonio (3rd Edition).
-            """
+        if method == 'barrier':
+            # Impedance from Acoustic Absorbers and Diffusers by Trevor Cox and Peter D'Antonio
+            vis = self.air_prop['air_viscosity']
             rm = (self.rho0 / open_area) * np.sqrt(8 * vis * self.w0) * (
                         1 + t_meters / (d_meters))  # Surface resistance
             zpp = (1j / open_area) * t_corr * self.w0 * self.rho0 + rm  # Impedance of perforated plate
-            if rho:
-                mip = 1j * self.w0 * rho * t_meters * (1 - open_area) / self.s0  # Mass impedance of the plate
-                zpp = 1 / (1 / zpp + 1 / mip)
-            zpp = matlib.repmat(zpp, len(self.incidence_angle), 1).T
+            zpp = numpy.matlib.repmat(zpp, len(self.incidence_angle), 1).T
+            #             zpp = zpp * np.cos(np.deg2rad(self.incidence_angle))
 
             ones = np.ones_like(self.freq, shape=(len(self.freq), len(self.incidence_angle)))
             zeros = np.zeros_like(self.freq, shape=(len(self.freq), len(self.incidence_angle)))
@@ -591,23 +649,16 @@ class TMM:
             Tp = np.array([[ones, zpp],
                            [zeros, ones]])
 
-        if method == "barrier_mpp":
-            """
-            Impedance for micro perforated plate by MAA in Potential of microperforated panel absorber (1998).
-            Not normalized by air impedance, that's why the rm is not divided by rho0*c0 and m is multiplied by rho0 
-            instead being divided by c0.
-            """
+        if method == 'barrier_mpp':
+            # Impedance for micro perforated plate
+            vis = self.air_prop['air_viscosity']
             cis = d_meters * np.sqrt(self.w0 * self.rho0 / (4 * vis))
-            kr = np.sqrt(1 + cis ** 2 / 32) + np.sqrt(2) / 32 * cis * d_meters / t_meters
-            rm = 32 * vis / open_area * t_meters / d_meters ** 2 * kr
-            km = 1 + 1 / np.sqrt(1 + cis ** 2 / 2) + 0.85 * d_meters / t_meters
-            m = self.rho0 * t_meters / open_area * km
-
+            rm = (32 * vis / open_area) * (t_meters / d_meters ** 2) * (np.sqrt(1 + cis ** 2 / 32) +
+                                                                        (np.sqrt(2) / 32) * cis * d_meters / t_meters)
+            m = (self.rho0 * t_meters / open_area) * (1 + 1 / (np.sqrt(9 + cis ** 2 / 2)) + 0.85 * d_meters / t_meters)
             zpp = rm + 1j * self.w0 * m
-            if rho:
-                mip = 1j * self.w0 * rho * t_meters * (1 - open_area) / self.s0  # Mass impedance of the plate
-                zpp = 1 / (1 / zpp + 1 / mip)
-            zpp = matlib.repmat(zpp, len(self.incidence_angle), 1).T
+            zpp = numpy.matlib.repmat(zpp, len(self.incidence_angle), 1).T
+            #             zpp = zpp * np.cos(np.deg2rad(self.incidence_angle))
 
             ones = np.ones_like(self.freq, shape=(len(self.freq), len(self.incidence_angle)))
             zeros = np.zeros_like(self.freq, shape=(len(self.freq), len(self.incidence_angle)))
@@ -615,13 +666,13 @@ class TMM:
             Tp = np.array([[ones, zpp],
                            [zeros, ones]])
 
-        elif method == "eq_fluid":
-            """
-            Impedance calculated through Zwikker and Kosten's viscothermal model.
-            """
+        elif method == 'eq_fluid':
+            # Impedance calculated through Zwikker and Kosten's model
             kc, zc = self.viscothermal_circular(d_meters, open_area)
-            kc = matlib.repmat(kc, len(self.incidence_angle), 1).T
-            zc = matlib.repmat(zc, len(self.incidence_angle), 1).T
+
+            kc = numpy.matlib.repmat(kc, len(self.incidence_angle), 1).T
+            #             kc = np.sqrt(kc ** 2 - kc **2 * np.sin(np.deg2rad(self.incidence_angle)))
+            zc = numpy.matlib.repmat(zc, len(self.incidence_angle), 1).T
 
             Tp = np.array([[np.cos(kc * t_corr), 1j * zc / self.s0 * np.sin(kc * t_corr)],
                            [1j * self.s0 / zc * np.sin(kc * t_corr), np.cos(kc * t_corr)]])
@@ -629,35 +680,27 @@ class TMM:
         if layer is None:
             layer = len(self.matrix)
 
-        self.matrix[layer] = {"type": "perforated_panel_layer",
-                              "thickness [mm]": t,
-                              "hole_diameter [mm]": d,
-                              "hole_spacing [mm]": s,
-                              "open_area [%]": open_area * 100,
-                              "end_correction": end_correction,
-                              "rho [kg/m3]": rho,
-                              "method": method,
-                              "matrix": Tp,
+        self.matrix[layer] = {'type': 'perforated_panel_layer',
+                              'thickness [mm]': t,
+                              'hole_diameter [mm]': d,
+                              'hole_spacing [mm]': s,
+                              'open_area [%]': open_area * 100,
+                              'end_correction': end_correction,
+                              'matrix': Tp,
                               }
 
-    def slotted_panel_layer(self, t=19, w=8, s=16, rho=None, method="barrier", layer=None):
+    def slotted_panel_layer(self, layer=None, t=19, w=8, s=16, method='barrier'):
         """
         Adds a plate with rectangular slits to the existing device.
-        Parameters
-        ----------
-        t : float or int, optional
-            Thickness of the slotted plate [mm]
-        w: float or int, optional
-            Slit width [mm]
-        s : float or int, optional
-            Slit spacing from the center of one slit to the next [mm]
-        rho : float, int or None, optional
-            Plate density [kg/m3] - if 'None' is passed than a fully rigid plate is assumed.
-        method : string, optional
-            Chooses between the available methods to calculate the perforated plate impedance.
-        layer : None or int, optional
-            Optional value to choose the layer level. If None is passed the layer will be adding to the existing ones.
+
+        Inputs:
+         - layer: int or None, determines the layer number; If None is passed the layer
+                  will be determined from the existing layers
+         - t: layer thickness [mm]
+         - w: slit width [mm]
+         - s: slit spacing from the center of one slit to the next [mm]
         """
+
         # Adjusting units
         t_meters = t / 1000  # Convert millimeters to meters
         w_meters = w / 1000
@@ -666,69 +709,102 @@ class TMM:
         open_area = w_meters / s_meters
 
         t_corr = t_meters + 2 * w_meters * (-1 / np.pi) * np.log(np.sin(0.5 * np.pi * open_area))
-        Ts = None
-        if method == "barrier":
-            """
-            Impedance from "On the design of resonant absorbers using a slotted plate" by Kristiansen and Vigran.
-            """
-            vis = self.air_prop["air_viscosity"]
+        
+        if method == 'barrier':
+            # Impedance from "On the design of resonant absorbers using a slotted plate" by Kristiansen and Vigran
+            vis = self.air_prop['air_viscosity']
             Rp = 0.5 * np.sqrt(2 * vis * self.rho0 * self.w0) * (4 + (2 * t) / w)
-            Xp = self.rho0 * t_corr
-            zs = (Rp + 1j * self.w0 *  Xp) / open_area
-            if rho:
-                mip = 1j * self.w0 * rho * t_meters * (1 - open_area) / self.s0  # Mass impedance of the plate
-                zs = 1 / (1 / zs + 1 / mip)
-
-            zs = matlib.repmat(zs, len(self.incidence_angle), 1).T
-
+            Xp = self.w0 * self.rho0 * (t_corr)
+            zs = (Rp + 1j * Xp) / open_area
+            zs = numpy.matlib.repmat(zs, len(self.incidence_angle), 1).T 
+    
             ones = np.ones_like(self.freq, shape=(len(self.freq), len(self.incidence_angle)))
             zeros = np.zeros_like(self.freq, shape=(len(self.freq), len(self.incidence_angle)))
 
-            Ts = np.array([[ones, zs],
+            Ts = np.array([[ones,  zs],
                            [zeros, ones]])
-
-        elif method == "eq_fluid":
-            """
-            Impedance calculated through M. Biot's viscothermal model.
-            """
+        
+        elif method =='eq_fluid':
+        
             kc, zc = self.viscothermal_slit(w_meters, open_area)
-            kc = matlib.repmat(kc, len(self.incidence_angle), 1).T
-            zc = matlib.repmat(zc, len(self.incidence_angle), 1).T
+            kc = numpy.matlib.repmat(kc, len(self.incidence_angle), 1).T
+            zc = numpy.matlib.repmat(zc, len(self.incidence_angle), 1).T
 
             Ts = np.array([[np.cos(kc * t_corr), 1j * zc / self.s0 * np.sin(kc * t_corr)],
                            [1j * self.s0 / zc * np.sin(kc * t_corr), np.cos(kc * t_corr)]])
+        
 
         if layer is None:
             layer = len(self.matrix)
 
-        self.matrix[layer] = {"type": "slotted_panel_layer",
-                              "thickness [mm]": t,
-                              "slot_width [mm]": w,
-                              "slot_spacing [mm]": s,
-                              "open_area [%]": open_area * 100,
-                              "rho [kg/m3]": rho,
-                              "method": method,
-                              "matrix": Ts,
+        self.matrix[layer] = {'type': 'slotted_panel_layer',
+                              'thickness [mm]': t,
+                              'slot_width [mm]': w,
+                              'slot_spacing [mm]': s,
+                              'open_area [%]': open_area * 100,
+                              'matrix': Ts,
                               }
+
+    def air_properties(self, t0=20, p0=101320, rh=30):
+        """
+        Computes properties of humid air.
+
+        Input parameters:
+          - t0: temperature in Celsius [C]
+          - p0: atmospheric pressure in Pascal [Pa]
+          - rh: relative humidity in percentage [%]
+
+        Output parameters:
+          - rho0: volume density [kg/m³]
+          - c0: sound speed [m/s]
+          - vis: absolute (or dynamic) viscosity [Ns/m²]
+          - gam: specific heat ratio [-]
+          - pn: Prandtl number [-]
+          - Cp: Constant Pressure Specific Heat [J/kg*K]
+        """
+
+        kappla = 0.026  # Air thermal conductivity [W/m*k]
+        t = t0 + 273.16  # Temperature in Kelvin
+        R = 287.031  # Gas constant for air [J/K/kg]
+        Rvp = 461.521  # Gas constant for water vapor [J/K/kg]
+        Pvp = 0.0658 * t ** 3 - 53.7558 * t ** 2 + 14703.8127 * t - 1345485.0465  # Pierce(Acoustics, 1991) page 555
+        vis = 7.72488e-8 * t - 5.95238e-11 * t ** 2 + 2.71368e-14 * t ** 3
+        Cp = 4168.8 * (0.249679 - 7.55179e-5 * t + 1.69194e-7 * t ** 2 - 6.46128e-11 * t ** 3)
+        Cv = Cp - R  # Constant Volume Specific Heat [J/kg/K] for 260 K < T < 600 K
+        pn = vis * Cp / kappla  # Prandtl number (fewly varies at typical air conditions (0°C=0.715; 60°C=0.709)
+        gam = Cp / Cv  # Specific heat ratio [-]
+        rho0 = p0 / (R * t) - (1 / R - 1 / Rvp) * rh / 100 * Pvp / t  # Density of air [kg/m³]
+        c0 = (gam * p0 / rho0) ** 0.5
+
+        air_properties = {'temperature_in_celsius': t0,
+                          'relative_humidity': rh,
+                          'atmospheric_pressure': p0,
+                          'prandtl_number': pn,
+                          'specific_heat_ratio': gam,
+                          'air_density': rho0,
+                          'speed_of_sound': c0,
+                          'air_viscosity': vis,
+                          'air_thermal_conductivity': kappla,
+                          'constant_pressure_specific_heat': Cp}
+
+        # return rho0, c0, vis, gam, pn, Cp, kappla
+        return air_properties
 
     def viscothermal_circular(self, d, open_area):
         """
         Zwikker and Kosten viscothermal model for circular cross-section.
-        Parameters
-        ----------
-        d : int or float
-            Hole diameter [m]
-        open_area : int or float
-            Plate porosity (% open area) [-]
-        Returns
-        -------
-        Propagation constant array and characteristic acoustic impedance array.
-        """
 
-        vis = self.air_prop["air_viscosity"]
-        gam = self.air_prop["specific_heat_ratio"]
-        pn = self.air_prop["prandtl_number"]
-        p0 = self.air_prop["atmospheric_pressure"]
+        Input parameters:
+         - d: hole diameter [m]
+         - open_area: plate porosity (% open area) [-]
+        """
+        from scipy.special import jv
+
+        vis = self.air_prop['air_viscosity']
+        #         vis = 15e-6
+        gam = self.air_prop['specific_heat_ratio']
+        pn = self.air_prop['prandtl_number']
+        p0 = self.air_prop['atmospheric_pressure']
 
         beta = d / 2 * np.sqrt(self.w0 * self.rho0 / vis)
         rhoef = self.rho0 / open_area * 1 / (1 - 2 / (beta * np.sqrt(-1j)) * jv(1, beta * np.sqrt(-1j)) /
@@ -743,20 +819,17 @@ class TMM:
     def viscothermal_slit(self, w, open_area):
         """
         M. Biot viscothermal model for circular slit cross-section.
-        Parameters
-        ----------
-        w : int or float
-            Slit width [m]
-        open_area : int or float
-            Plate porosity (% open area) [-]
-        Returns
-        -------
-        Propagation constant array and characteristic acoustic impedance array.
+
+        Input parameters:
+         - w: slot width [m]
+         - open_area: plate porosity (% open area) [-]
         """
-        vis = self.air_prop["air_viscosity"]
-        gam = self.air_prop["specific_heat_ratio"]
-        pn = self.air_prop["prandtl_number"]
-        p0 = self.air_prop["atmospheric_pressure"]
+        from scipy.special import jv
+
+        vis = self.air_prop['air_viscosity']
+        gam = self.air_prop['specific_heat_ratio']
+        pn = self.air_prop['prandtl_number']
+        p0 = self.air_prop['atmospheric_pressure']
 
         beta = w / 2 * np.sqrt(self.w0 * self.rho0 / vis)
 
@@ -767,775 +840,334 @@ class TMM:
 
         return kc, zc
 
-    def material_model(self, type="door", params=None):
-        """
-        Models for different surfaces in the GRAS database published in the supplemental data of
-        "area framework for auralization of boundary element method simulations including source and receiver
-        directivity" by Jonathan area. Hargreaves, Luke R. Rendell, and Yiu W. Lam.
-        GRAS database: https://depositonce.tu-berlin.de//handle/11303/7506
-        Supplemental data: https://asa.scitation.org/doi/suppl/10.1121/1.5096171
-        Available materials:
-        -------------------
-         - Floor
-         - Ceiling
-         - Door
-         - Concrete
-         - Plaster
-         - MDF
-         - Window
-        Parameters
-        ----------
-        type : str, optional
-            String descriptor of the desired material available in the database.
-        params : dict, optional
-            Dictionary containing calculation parameters for 'door' and 'window' materials. See the docstrings below.
-        """
-        if type == "floor":
-            """
-            This is a model of the floor material defined in Scene 9 of the GRAS database. 
-            It is a purely real (resistive) admittance found from the measured absorption coefficient data using a 
-            spline fit.
-            """
-            # Load the random incidence absorption coefficient data included in the GRAS database:
-            csvData = pandas.read_csv(database_path() + "_csv" + os.sep + "mat_scene09_floor.csv", header=None).T
-            fMeas = csvData[0]  # Third-octave band center frequencies
-            aMeas = csvData[1]  # Third-octave band center absorption coefficients
-            sMeas = csvData[2]  # Third-octave band center scattering coefficients
-
-            # Convert to purely real admittance assuming material follows '55 degree rule':
-            YsMeas = np.cos(np.deg2rad(55)) * (1 - np.sqrt(1 - aMeas)) / (1 + np.sqrt(1 - aMeas))
-
-            # Interpolate to specific frequency list using a spline fit:
-            Yf = CubicSpline(fMeas, YsMeas, bc_type="natural")
-            Sf = CubicSpline(fMeas, sMeas, bc_type="natural")
-            YsInterp = Yf(self.freq)
-            SsInterp = Sf(self.freq)
-
-            self.z = 1 / YsInterp
-            self.scat = SsInterp
-
-        elif type == "ceiling":
-            """
-            This is a model of the ceiling material defined in Scene 9 of the GRAS database. 
-            It is a purely real (resistive) admittance found from the measured absorption coefficient data using a 
-            spline fit.
-            """
-            # Load the random incidence absorption coefficient data included in the GRAS database:
-            csvData = pandas.read_csv(database_path() + "_csv" + os.sep + "mat_scene09_ceiling.csv", header=None).T
-            fMeas = csvData[0]  # Third-octave band center frequencies
-            aMeas = csvData[1]  # Third-octave band center absorption coefficients
-            sMeas = csvData[2]  # Third-octave band center scattering coefficients
-
-            # Convert to purely real admittance assuming material follows '55 degree rule':
-            YsMeas = np.cos(np.deg2rad(55)) * (1 - np.sqrt(1 - aMeas)) / (1 + np.sqrt(1 - aMeas))
-
-            # Interpolate to specific frequency list using a spline fit:
-            Yf = CubicSpline(fMeas, YsMeas, bc_type="natural")
-            Sf = CubicSpline(fMeas, sMeas, bc_type="natural")
-            YsInterp = Yf(self.freq)
-            SsInterp = Sf(self.freq)
-
-            self.z = 1 / YsInterp
-            self.scat = SsInterp
-
-        elif type == "door":
-            """
-            This is a model of the door material defined in Scene 9 of the GRAS database. It is entirely fabricated 
-            from other datasets, since no data was given for this component in the GRAS database. It attempts to define 
-            realistic boundary conditions in a case where insufficient data exists, and is included in this work to 
-            illustrate the sort of compromises that are often necessary, rather than to propose a specific model for 
-            these materials. The reader is asked to consider it with these caveats in mind.
-            It comprises two approaches:
-            1) area purely resistive fit to octave-band summed absorption and transmission coefficient data. 
-               Both absorption and transmission coefficients were used since the former did not rise at low frequencies, 
-               indicating that the data in the dataset use was most likely measured for doors on the floor of a 
-               reverberation room, hence transmission would be zero. From the perspective of this application, 
-               transmission is another mechanism by which energy is lost and should be included in absorption, 
-               hence the coefficients are summed.
-            2) area reactive Mass-Spring-Damper model of the assumed fundamental resonance of the door panel. This was 
-               included since such effects are well known to be reactive, and this affects room modal frequencies. 
-               The Mass value was chosen to be consistent with the assumed material. Stiffness and Damping values were 
-               tuned to the desired absorption peak frequency and bandwidth. This did not however produce sufficient 
-               absorption to join with the trend in 1, so an additional amount of purely resistive absorption was also 
-               added.
-            These are combined using the non-linear crossover of Aretz el al.
-            Parameters
-            ----------
-            sample_rate : int
-                Sampling rate [Hz]
-            crossover_frequency : int
-                Crossover frequency between the models [Hz]
-            rho_m : int or float
-                Assumed bulk density [kg/m^3]
-            d : float
-                Assumed thickness [m]
-            area : float
-                Area [m^2]
-            f_res : int or float
-                Assumed fundamental panel resonance frequency [Hz]
-            smooth : bool
-                Boolean to choose whether apply smoothing to the curve or not.
-            """
-            # Model 1: purely resistive fit to octave-band absorption data:
-            if params is None:
-                params = {"sample_rate": 44100, "crossover_frequency": 250, "rho_m": 375, "d": 0.043, "area": 2.2 * 0.97,
-                          "f_res": 95, "smooth": False}
-
-            sample_rate = params["sample_rate"]
-            crossover_frequency = params["crossover_frequency"]
-            rho_m = params["rho_m"]
-            d = params["d"]
-            area = params["area"]
-            f_res = params["f_res"]
-            smooth = params["smooth"]
-
-            # Measured data:
-            fMeas = [125, 250, 500, 1000, 2000, 4000, ]  # Octave band centre frequencies (Hz)
-            aMeas = np.asarray([0.14, 0.10, 0.06, 0.08, 0.1, 0.1, ]) + \
-                    np.asarray([0.07, 0.01, 0.02, 0.03, 0.01, 0.01, ])  # Absorption and Transmission coefficients
-
-            # Convert to purely real admittance assuming material follows '55 degree rule':
-            YsMeas = np.cos(np.deg2rad(55)) * (1 - np.sqrt(1 - aMeas)) / (1 + np.sqrt(1 - aMeas))
-
-            # Interpolate to specific frequency list using a spline fit:
-            Yf = CubicSpline(fMeas, YsMeas, bc_type="natural")
-            Ys1 = Yf(self.freq)
-
-            # Model 2: reactive Mass-Spring-Damper fit to assumed fundamental panel resonance:
-
-            M = rho_m * d * area  # Mass term
-            K = M * (2 * np.pi * f_res) ** 2  # Stiffness term  - adjusted to match assumed f_res
-            R = 12000  # Resistance term - adjusted to match measured coefficients
-            zS = (-1j * 2 * np.pi * self.freq) * M + R + K / (-1j * 2 * np.pi * self.freq)  # Surface impedance
-            Ys2 = self.rho0 * self.c0 / zS  # Specific admittance
-
-            # Additional resistive component:
-            aExtra = np.mean(aMeas[2::])
-            YsExtra = np.cos(np.deg2rad(55)) * (1 - np.sqrt(1 - aExtra)) / (1 + np.sqrt(1 - aExtra))
-            Ys2 = Ys2 + YsExtra
-
-            # Define Butterworth filters.
-            # Note these are applied twice to make Linkwitz-Riley:
-            B_HP, A_HP = butter(8, crossover_frequency * 2 / sample_rate, "high")
-            B_LP, A_LP = butter(8, crossover_frequency * 2 / sample_rate, "low")
-
-            # Non-linear crossover method of Aretz et al:
-            Ys = np.abs(Ys2 * np.conj(freqz(B_LP, A_LP, self.freq, fs=sample_rate)[1]) ** 2) + \
-                 np.abs(Ys1 * np.conj(freqz(B_HP, A_HP, self.freq, fs=sample_rate)[1]) ** 2)  # Add the magnitudes only
-
-            Ys = Ys * np.exp(1j * np.angle(Ys2))  # Multiply the phase from MSD model back in
-
-            if smooth:
-                Ys_real = savgol_filter(np.real(Ys), 31, 3)
-                Ys_imag = savgol_filter(np.imag(Ys), 31, 3)
-                Ys = Ys_real + 1j * Ys_imag
-
-            self.z = 1 / Ys
-
-        elif type == "concrete":
-            """
-            This is a model of the concrete material defined in Scene 9 of the GRAS database. 
-            It is a purely real (resistive) admittance found from the measured absorption coefficient data using a 
-            spline fit.
-            """
-            # Load the random incidence absorption coefficient data included in the GRAS database:
-            csvData = pandas.read_csv(database_path() + "_csv" + os.sep + "mat_scene09_concrete.csv", header=None).T
-            fMeas = csvData[0]  # Third-octave band center frequencies
-            aMeas = csvData[1]  # Third-octave band center absorption coefficients
-            sMeas = csvData[2]  # Third-octave band center scattering coefficients
-
-            # Convert to purely real admittance assuming material follows '55 degree rule':
-            YsMeas = np.cos(np.deg2rad(55)) * (1 - np.sqrt(1 - aMeas)) / (1 + np.sqrt(1 - aMeas))
-
-            # Interpolate to specific frequency list using a spline fit:
-            Yf = CubicSpline(fMeas, YsMeas, bc_type="natural")
-            Sf = CubicSpline(fMeas, sMeas, bc_type="natural")
-            YsInterp = Yf(self.freq)
-            SsInterp = Sf(self.freq)
-
-            self.z = 1 / YsInterp
-            self.scat = SsInterp
-
-        elif type == "plaster":
-            """
-            This is a model of the plaster material defined in Scene 9 of the GRAS database. 
-            It is a purely real (resistive) admittance found from the measured absorption coefficient data using a 
-            spline fit.
-            """
-            # Load the random incidence absorption coefficient data included in the GRAS database:
-            csvData = pandas.read_csv(database_path() + "_csv" + os.sep + "mat_scene09_plaster.csv", header=None).T
-            fMeas = csvData[0]  # Third-octave band center frequencies
-            aMeas = csvData[1]  # Third-octave band center absorption coefficients
-            sMeas = csvData[2]  # Third-octave band center scattering coefficients
-
-            # Convert to purely real admittance assuming material follows '55 degree rule':
-            YsMeas = np.cos(np.deg2rad(55)) * (1 - np.sqrt(1 - aMeas)) / (1 + np.sqrt(1 - aMeas))
-
-            # Interpolate to specific frequency list using a spline fit:
-            Yf = CubicSpline(fMeas, YsMeas, bc_type="natural")
-            Sf = CubicSpline(fMeas, sMeas, bc_type="natural")
-            YsInterp = Yf(self.freq)
-            SsInterp = Sf(self.freq)
-
-            self.z = 1 / YsInterp
-            self.scat = SsInterp
-
-        elif type == "mdf":
-            """
-            This is a model of the MDF material defined in Scene 9 of the GRAS database. 
-            It is a purely real (resistive) admittance found from the measured absorption coefficient data using a 
-            spline fit.
-            """
-            # Load the random incidence absorption coefficient data included in the GRAS database:
-            csvData = pandas.read_csv(database_path() + "_csv" + os.sep + "mat_MDF25mmA_plane_00deg.csv", header=None).T
-            fMeas = csvData[0]  # Third-octave band center frequencies
-            aMeas = csvData[1]  # Third-octave band center absorption coefficients
-            sMeas = csvData[2]  # Third-octave band center scattering coefficients
-
-            # Convert to purely real admittance assuming material follows '55 degree rule':
-            YsMeas = np.cos(np.deg2rad(55)) * (1 - np.sqrt(1 - aMeas)) / (1 + np.sqrt(1 - aMeas))
-
-            # Interpolate to specific frequency list using a spline fit:
-            Yf = CubicSpline(fMeas, YsMeas, bc_type="natural")
-            Sf = CubicSpline(fMeas, sMeas, bc_type="natural")
-            YsInterp = Yf(self.freq)
-            SsInterp = Sf(self.freq)
-
-            self.z = 1 / YsInterp
-            self.scat = SsInterp
-
-        elif type == "window":
-            """
-            This is a model of the windows material defined in Scene 9 of the GRAS database. It combines two approaches:
-            1) area purely resistive fit to teh third-octave band absorption coefficient data provided with the 
-               GRAS dataset.
-            2) area reactive Mass-Spring-Damper model of the assumed fundamental resonance of the window panels. 
-               This was included since such effects are well known be reactive, and this affects room modal frequencies. 
-               It was also deemed necessary since the fundamental resonance of the panels appeared to be lower than the 
-               bandwidth the measured dataset extended to (absorption rose quite sharply at the lowest frequencies). 
-               The Mass value was chosen to be consistent with the assumed material. Stiffness and Damping values were 
-               tuned to the desired absorption peak frequency and bandwidth. This did not however produce sufficient 
-               absorption to join with the trend in 1, so an additional amount of purely resistive absorption was also 
-               added.
-            These are combined using the non-linear crossover of Aretz el al.
-            Note that this script attempts to define realistic boundary conditions in a case where insufficient data 
-            exists, and is included in this work to illustrate the sort of compromises that are often necessary, rather 
-            than to propose a specific model for these materials. The reader is asked to consider it with these caveats 
-            in mind.
-            Parameters
-            ----------
-            sample_rate : int
-                Sampling rate [Hz]
-            crossover_frequency : int
-                Crossover frequency between the models [Hz]
-            rho_m : int or float
-                Assumed bulk density [kg/m^3]
-            d : float
-                Assumed thickness [m]
-            area : float
-                Area [m^2]
-            f_res : int or float
-                Assumed fundamental panel resonance frequency [Hz]
-            smooth : bool
-                Boolean to choose whether apply smoothing to the curve or not.
-            """
-            # Model 1: purely resistive fit to provided third-octave-band absorption data:
-            if params is None:
-                params = {"sample_rate": 44100, "crossover_frequency": 200, "rho_m": 2500, "d": 0.0067, "area": 5.33,
-                          "f_res": 6.66, "smooth": False}
-
-            sample_rate = params["sample_rate"]
-            crossover_frequency = params["crossover_frequency"]
-            rho_m = params["rho_m"]
-            d = params["d"]
-            area = params["area"]
-            f_res = params["f_res"]
-            smooth = params["smooth"]
-
-            # Load the random incidence absorption coefficient data included in the GRAS database:
-            csvData = pandas.read_csv(database_path() + "_csv" + os.sep + "mat_scene09_windows.csv", header=None).T
-            fMeas = csvData[0]  # Third-octave band center frequencies
-            aMeas = csvData[1]  # Third-octave band center absorption coefficients
-            sMeas = csvData[2]  # Third-octave band center scattering coefficients
-
-            # Convert to purely real admittance assuming material follows '55 degree rule':
-            YsMeas = np.cos(np.deg2rad(55)) * (1 - np.sqrt(1 - aMeas)) / (1 + np.sqrt(1 - aMeas))
-
-            # Interpolate to specific frequency list using a spline fit:
-            Yf = CubicSpline(fMeas, YsMeas, bc_type="natural")
-            Sf = CubicSpline(fMeas, sMeas, bc_type="natural")
-            Ys1 = Yf(self.freq)
-            SsInterp = Sf(self.freq)
-
-            self.scat = SsInterp
-
-            # Model 2: reactive Mass-Spring-Damper fit to assumed fundamental panel resonance:
-            M = rho_m * d * area  # Mass term
-            K = M * (2 * np.pi * f_res) ** 2  # Stiffness term  - adjusted to match assumed f_res
-            R = 6000  # Resistance term - adjusted to match measured coefficients
-            zS = (-1j * 2 * np.pi * self.freq) * M + R + K / (-1j * 2 * np.pi * self.freq)  # Surface impedance
-            Ys2 = self.rho0 * self.c0 / zS  # Specific admittance
-
-            # Additional resistive component:
-            aExtra = aMeas[8]
-            YsExtra = np.cos(np.deg2rad(55)) * (1 - np.sqrt(1 - aExtra)) / (1 + np.sqrt(1 - aExtra))
-            Ys2 = Ys2 + YsExtra
-
-            # Define Butterworth filters.
-            # Note these are applied twice to make Linkwitz-Riley:
-            B_HP, A_HP = butter(8, crossover_frequency * 2 / sample_rate, "high")
-            B_LP, A_LP = butter(8, crossover_frequency * 2 / sample_rate, "low")
-
-            # Non-linear crossover method of Aretz et al:
-            Ys = np.abs(Ys2 * np.conj(freqz(B_LP, A_LP, self.freq, fs=sample_rate)[1]) ** 2) + \
-                 np.abs(Ys1 * np.conj(freqz(B_HP, A_HP, self.freq, fs=sample_rate)[1]) ** 2)  # Add the magnitudes only
-
-            Ys = Ys * np.exp(1j * np.angle(Ys2))  # Multiply the phase from MSD model back in
-
-            if smooth:
-                Ys_real = savgol_filter(np.real(Ys), 31, 3)
-                Ys_imag = savgol_filter(np.imag(Ys), 31, 3)
-                Ys = Ys_real + 1j * Ys_imag
-
-            self.z = 1 / Ys
-
+    def show_layers(self, conversion=[0.0393701, '[inches]']):
+        print('Device properties:')
+        print('\t(1 - Front face)')
+        print(f'\t({len(self.matrix)} - Rear Face)')
+        print(f'\tSound incidence: {self.incidence}')
+        if self.incidence == 'diffuse':
+            print(f'\tAngle: {min(self.incidence_angle):0.0f}° - {max(self.incidence_angle):0.0f}°\n')
         else:
-            available_types = ["floor", "ceiling", "door", "concrete", "plaster", "mdf", "window"]
-            raise NameError(f"Available material models: {available_types}")
-
-        self.z = self.z * self.z0
-        self.filename = self.filename + "_material_model"
-        self.matrix = {"material_model": {"type": type,
-                                          "params": params}}
-
-    def field_impedance(self, z):
-        """
-        Calculates the field impedance for a set of angle dependent impedances.
-        Parameters
-        ----------
-        z : array
-            Multidimensional array with angle dependent set of impedances.
-        Returns
-        -------
-        Field impedance array.
-        """
-        A = 1 / z
-        Af1 = A * np.sin(np.deg2rad(self.incidence_angle))
-        Af2 = np.sin(np.deg2rad(self.incidence_angle))
-        Af_div = Af1 / Af2
-        Af = integrate.simps(Af_div, np.deg2rad(self.incidence_angle))
-        z_field = 1 / Af
-        return z_field
-
-    def compute(self, rigid_backing=False, conj=False, show_layers=True):
-        """
-        Calculates the global transfer matrix for the existing layers.
-        Parameters
-        ----------
-        rigid_backing : bool, optional
-            If True adds a rigid layer to the end of the device, else an approximation for the
-            radiation impedance is used.
-        conj : bool, optional
-            Option to conjugate the imaginary part of the impedance.
-        show_layers : bool, optional
-            Option to display the layers and their details.
-        """
-        if "material_model" not in self.filename:
-            self.matrix = dict(collections.OrderedDict(sorted(self.matrix.items())))
-
-            if "rigid_backing" in self.matrix[list(self.matrix.keys())[-1]]:
-                self.matrix.pop(list(self.matrix.keys())[-1])
-                rigid_backing = True
-
-            Tg = self.matrix[0]["matrix"]
-            for matrix in range(len(self.matrix) - 1):
-                Tg = np.einsum("ijna,jkna->ikna", Tg, self.matrix[matrix + 1]["matrix"])
-
-            Ag = Tg[0, 0]
-            Bg = Tg[0, 1]
-            Cg = Tg[1, 0]
-            Dg = Tg[1, 1]
-
-            if rigid_backing:
-                zrad = 0
-            else:
-                # Radiation impedance for an unflanged circular tube in an infinite baffle
-                zrad = self.z0 * (0.25 * (self.w0 * self.srad) ** 2 + 1j * 0.61 * self.w0 * self.srad)
-                zrad = zrad.reshape((len(zrad), 1))
-            self.z_angle = self.s0 * (Ag + (Bg * zrad / self.srad)) / (Cg + (Dg * zrad / self.srad))
-
-            if self.incidence == "diffuse":
-                zc = self.field_impedance(self.z_angle)
-            else:
-                zc = self.z_angle[:, 0]
-
-            if not conj:
-                self.z = zc
-            else:
-                self.z = np.conj(zc)
-                self.z_angle = np.conj(self.z_angle)
-
-            self.matrix[len(self.matrix)] = {"type": "backing",
-                                             "rigid_backing": rigid_backing,
-                                             "impedance_conjugate": conj,
-                                             }
-
-            if show_layers:
-                self.show_layers()
-
-    def clear_matrix(self):
-        """Removes matrix data from self.matrix to reduce file size."""
-        for matrix in range(len(self.matrix) - 1):
-            self.matrix[matrix]["matrix"] = None
-
-    def reduce_size(self):
-        """Removes the value of some attributes to reduce file size."""
-        self.clear_matrix()
-        self._z_angle = None
-
-    def rebuild(self):
-        """Rebuild treatment layers to update frequency range."""
-        matrix = self.matrix.copy()
-        self.matrix = {}
-        for key, value in matrix.items():
-            if key != "material_model":
-                if value["type"] == "porous_layer":
-                    self.porous_layer(sigma=value["flow_resistivity [k*Pa*s/m²]"],
-                                      t=value["thickness [mm]"],
-                                      layer=key)
-                elif value["type"] == "air_layer":
-                    self.air_layer(t=value["thickness [mm]"],
-                                   layer=key)
-                elif value["type"] == "perforated_panel_layer":
-                    self.perforated_panel_layer(t=value["thickness [mm]"],
-                                                d=value["hole_diameter [mm]"],
-                                                s=value["hole_spacing [mm]"],
-                                                end_correction=value["end_correction"],
-                                                rho=value["rho [kg/m3]"],
-                                                method=value["method"],
-                                                layer = key)
-                elif value["type"] == "slotted_panel_layer":
-                    self.slotted_panel_layer(t=value["thickness [mm]"],
-                                             w=value["slot_width [mm]"],
-                                             s=value["slot_spacing [mm]"],
-                                             rho=value["rho [kg/m3]"],
-                                             method=value["method"],
-                                             layer=key)
-                elif value["type"] == "membrane_layer":
-                    self.membrane_layer(t=value["thickness [mm]"],
-                                        rho=value["density [kg/m³]"],
-                                        layer=key)
-            else:
-                self.material_model(value["type"], params=value["params"])
-        if matrix[list(matrix.keys())[-1]]["type"] == "backing" and \
-                matrix[list(matrix.keys())[-1]]["rigid_backing"] is True:
-            self.compute(rigid_backing=True, show_layers=False)
-        else:
-            self.compute(rigid_backing=False, show_layers=False)
-
-    def show_layers(self, conversion=None):
-        """
-        Method to print each layer with its details.
-        Parameters
-        ----------
-        conversion : list or float and string, optional
-            List containing conversion ratio and string containing the name of the converted unit.
-        """
-        if conversion is None:
-            conversion = [0.0393701, "[inches]"]
-        print("Device properties:")
-        print("\t(1 - Front face)")
-        print(f"\t({len(self.matrix)} - Rear Face)")
-        print(f"\tSound incidence: {self.incidence}")
-        if self.incidence == "diffuse":
-            print(f"\tAngle: {min(self.incidence_angle):0.0f}° - {max(self.incidence_angle):0.0f}°\n")
-        else:
-            print(f"\tAngle: {(self.incidence_angle[0]):0.0f}°\n")
+            print(f'\tAngle: {(self.incidence_angle[0]):0.0f}°\n')
 
         total_depth = 0
         for i in range(1, len(self.matrix) + 1):
             print(f"Layer {i}:")
             for key, value in self.matrix[i - 1].items():
-                if key != "matrix":
+                if key != 'matrix':
                     if isinstance(value, str) or isinstance(value, bool):
-                        print(f"\t{key}: ", value)
+                        print(f'\t{key}: ', value)
                     else:
-                        if "[mm]" in key:
-                            converted = key.replace("[mm]", conversion[1])
-                            print(f"\t{key}: {value:0.2f} | {converted}: {value * conversion[0]:0.2f}")
-                        elif value is None:
-                            print(f"\t{key}: {None}")
+                        if '[mm]' in key:
+                            converted = key.replace('[mm]', conversion[1])
+                            print(f'\t{key}: {value:0.2f} | {converted}: {value * conversion[0]:0.2f}')
                         else:
-                            print(f"\t{key}: {value:0.2f}")
-                        if "thickness" in key:
+                            print(f'\t{key}: {value:0.2f}')
+                        if 'thickness' in key:
                             total_depth += value
-        print(f"\nTotal treatment depth [mm]: {total_depth:0.2f} | " +
-              f"Total treatment depth {conversion[1]}: {total_depth * conversion[0]:0.2f}")
+        print(f'\nTotal treatment depth [mm]: {total_depth:0.2f} | ' +
+              f'Total treatment depth {conversion[1]}: {total_depth * conversion[0]:0.2f}')
 
-    def filter_alpha(self, n_oct=1, view=True, show_table=False, **kwargs):
+    def save2sheet(self, filename='TMM', timestamp=True, conversion=[0.0393701, '[inches]'],
+                   ext='.xlsx', chart_styles=[35, 36], nthOct=1):
+        import xlsxwriter
+
+        timestr = time.strftime("%Y%m%d-%H%M_")
+        if self.project_folder is None:
+            full_path = outputs + filename + ext
+            if timestamp is True:
+                full_path = outputs + timestr + filename + ext
+        else:
+            folderCheck = os.path.exists(self.project_folder + '\\Treatments')
+            if folderCheck is False:
+                os.mkdir(self.project_folder + '\\Treatments')
+            full_path = self.project_folder + '\\Treatments\\' + filename + ext
+            if timestamp is True:
+                full_path = self.project_folder + '\\Treatments\\' + timestr + filename + ext
+
+        workbook = xlsxwriter.Workbook(full_path)
+        worksheet = workbook.add_worksheet()
+
+        # Setting formats
+        bold = workbook.add_format({'bold': True, 'font_color': 'black', 'align': 'center', 'border': 2})
+        regular = workbook.add_format({'bold': False, 'font_color': 'black', 'align': 'center', 'border': 1})
+        regular_left_bold = workbook.add_format({'bold': True, 'font_color': 'black', 'align': 'right', 'border': 1,
+                                                 })
+        regular_left = workbook.add_format({'bold': False, 'font_color': 'black', 'align': 'left', 'border': 1,
+                                            })
+
+        # Adding frequency related data
+        worksheet.write(0, 0, 'Frequency', bold)
+        worksheet.write(0, 1, 'Real Z', bold)
+        worksheet.write(0, 2, 'Img Z', bold)
+        worksheet.write(0, 3, 'Absorption', bold)
+        for i in range(len(self.freq)):
+            worksheet.write(1 + i, 0, self.freq[i], regular)
+            worksheet.write(1 + i, 1, np.real(self.z_norm[i]), regular)
+            worksheet.write(1 + i, 2, np.imag(self.z_norm[i]), regular)
+            worksheet.write(1 + i, 3, self.alpha[i], regular)
+
+        # Absorption coefficient plot
+        chart_abs = workbook.add_chart({'type': 'line'})
+        chart_abs.add_series({'name': ['Sheet1', 0, 3],
+                              'categories': ['Sheet1', 1, 0, len(self.freq) + 1, 0],
+                              'values': ['Sheet1', 1, 3, len(self.freq) + 1, 3], })
+        chart_abs.set_title({'name': 'Absorption Coefficient'})
+        chart_abs.set_x_axis({'name': 'Frequency [Hz]'})
+        chart_abs.set_y_axis({'name': 'Alpha [-]'})
+        chart_abs.set_style(chart_styles[0])
+        worksheet.insert_chart('G1', chart_abs, {'x_offset': 0, 'y_offset': 0, 'x_scale': 1.334, 'y_scale': 1.11})
+
+        # Impedance plot
+        chart_z = workbook.add_chart({'type': 'line'})
+        chart_z.add_series({'name': ['Sheet1', 0, 1],
+                            'categories': ['Sheet1', 1, 0, len(self.freq) + 1, 0],
+                            'values': ['Sheet1', 1, 1, len(self.freq) + 1, 1], })
+        chart_z.add_series({'name': ['Sheet1', 0, 2],
+                            'categories': ['Sheet1', 1, 0, len(self.freq) + 1, 0],
+                            'values': ['Sheet1', 1, 2, len(self.freq) + 1, 2], })
+        chart_z.set_title({'name': 'Normalized Surface Impedance'})
+        chart_z.set_x_axis({'name': 'Frequency [Hz]'})
+        chart_z.set_y_axis({'name': 'Z [Pa*s/m]'})
+        chart_z.set_style(chart_styles[1])
+        worksheet.insert_chart('G17', chart_z, {'x_offset': 0, 'y_offset': 0, 'x_scale': 1.334, 'y_scale': 1.11})
+
+        # Adding nthOct band absorption coeffiecients
+        line = 0
+        idx = 4
+        worksheet.merge_range(line, idx, line, idx + 1, f'1/{nthOct} octave band absorption coefficients', bold)
+        line += 1
+        worksheet.write(line, idx, 'Frequency Band [Hz]', bold)
+        worksheet.write(line, idx + 1, 'Absorption Coeffiecient [-]', bold)
+        line += 1
+        _, _, octValues = self.filter_alpha(nthOct=nthOct, plot=False, returnValues=True)
+        lists = sorted(octValues.items())  # sorted by key, return a list of tuples
+        xOct, yOct = zip(*lists)  # unpack a list of pairs into two tuples
+        for x, y in zip(xOct, yOct):
+            worksheet.write(line, idx, x, regular)
+            worksheet.write(line, idx + 1, y, regular)
+            line += 1
+
+        # Adding device properties
+        total_depth = 0
+        worksheet.merge_range(line, idx, line, idx + 1, 'Device Properties', bold)
+        line += 1
+        worksheet.write(line, idx, '(1 - Front face)', regular)
+        worksheet.write(line, idx + 1, f'({len(self.matrix)} - Rear face)', regular)
+        line += 1
+        worksheet.write(line, idx, 'Sound incidence:', regular_left_bold)
+        worksheet.write(line, idx + 1, self.incidence, regular_left)
+        line += 1
+        worksheet.write(line, idx, 'Angle [°]:', regular_left_bold)
+        if self.incidence == 'diffuse':
+            worksheet.write(line, idx + 1,
+                            f'{min(self.incidence_angle):0.0f} - {max(self.incidence_angle):0.0f}',
+                            regular_left)
+        else:
+            worksheet.write(line, idx + 1,
+                            f'{(self.incidence_angle[0]):0.0f}',
+                            regular_left)
+        line -= 1
+        for i in range(1, len(self.matrix) + 1):
+            if i > 1:
+                line -= 1
+            worksheet.merge_range(1 + i + line, idx, 1 + i + line, idx + 1, f'Layer {i}', bold)
+            line += 1
+            for key, value in self.matrix[i - 1].items():
+                if key != 'matrix':
+                    if isinstance(value, str) or isinstance(value, bool):
+                        worksheet.write(1 + i + line, idx, f'{key}:', regular_left_bold)
+                        worksheet.write(1 + i + line, idx + 1, f'{value}', regular_left)
+                        line += 1
+                    else:
+                        if '[mm]' in key:
+                            converted = key.replace('[mm]', conversion[1])
+                            worksheet.write(1 + i + line, idx, f'{key}:', regular_left_bold)
+                            worksheet.write(1 + i + line, idx + 1, value, regular_left)
+                            line += 1
+                            worksheet.write(1 + i + line, idx, f'{converted}:', regular_left_bold)
+                            worksheet.write(1 + i + line, idx + 1, value * conversion[0], regular_left)
+                            line += 1
+                        else:
+                            worksheet.write(1 + i + line, idx, f'{key}:', regular_left_bold)
+                            worksheet.write(1 + i + line, idx + 1, value, regular_left)
+                            line += 1
+                        if 'thickness' in key:
+                            total_depth += value
+
+        worksheet.merge_range(1 + i + line, idx, 1 + i + line, idx + 1, 'Total', bold)
+        line += 1
+        worksheet.write(1 + i + line, idx, f'total treatment depth [mm]:', regular_left_bold)
+        worksheet.write(1 + i + line, idx + 1, total_depth, regular_left)
+        line += 1
+        worksheet.write(1 + i + line, idx, f'total treatment depth {conversion[1]}:', regular_left_bold)
+        worksheet.write(1 + i + line, idx + 1, total_depth * conversion[0], regular_left)
+        line += 1
+
+        # Setting column widths
+        worksheet.set_column('A:D', 12)
+        worksheet.set_column('E:F', 28)
+
+        workbook.close()
+
+        print(f'Sheet saved to ', full_path)
+
+    def filter_alpha(self, nthOct=1, plot='available', warning=False, returnValues=False, figsize=(15, 5)):
         """
-        Filters the absorption coefficient into fractional octave bands. See tmm._plot.acoustic data for kwargs.
         Parameters
         ----------
-        n_oct : int, optional
-            Fractional octave bands that the absorption will be filtered to.
-        view : bool, optional
-            Boolean to display plot with filtered absorption.
-        show_table : bool, optional
-            Boolean to display the filtered values in a table.
+        freq : array of int
+            The frequency values.
+        alpha : array of float
+            The sound absorption coefficient you would like to filter.
+        nthOct : int
+            How many bands per octave. Default is 3 = 1/3 octave band.
+
         Returns
         -------
-        Bands' center frequency array and filtered absorption array.
+        array of float
+            The center frequency for each band.
+        array of float
+            The sound absorption coefficient filtered.
         """
-        bands, result = pytta.utils.filter_values(self.freq, self.alpha, nthOct=n_oct)
+        bands = pytta.utils.fractional_octave_frequencies(nthOct=nthOct)
+        result = np.array([0], float)
+        available_data = {}
+
+        # Compute the acoustic absorption coefficient per octave band
+        for a in np.arange(1, len(bands)):
+            result = np.append(result, 0)  # band[a] = 0
+            idx = np.argwhere((self.freq >= bands[a, 0]) & (self.freq < bands[a, 2]))
+            # If we have no 'alpha' point in this band
+            if (len(idx) == 0):
+                if warning:
+                    print(f'Warning: no point found in band centered at {bands[a, 1]} Hz')
+            # If we have only 1 'alpha' point in this band
+            elif (len(idx) == 1):
+                if warning:
+                    print(f'Warning: only one point found in band centered at {bands[a, 1]} Hz')
+                result[a] = self.alpha[idx]
+            # If we have more than 1 'alpha' point in this band
+            elif (len(idx) > 1):
+                for b in np.arange(len(idx) - 1):
+                    result[a] = result[a] + (self.freq[idx[0] + b] - self.freq[idx[0] + b - 1]) * abs(
+                        self.alpha[idx[1] + b] + self.alpha[idx[0] + b - 1]) / 2
+                result[a] = result[a] / (self.freq[idx[len(idx) - 1]] - self.freq[idx[0]])
+                available_data[bands[a, 1]] = result[a]
 
         # Plot
-        if view:
-            _, _ = plot.oct_filter(self.freq, self.alpha, bands, result, n_oct, "Absorption Coefficient [-]",
-                                   filename=self.filename, project_folder=self.project_folder, **kwargs)
+        if plot:
+            fig, ax1 = plt.subplots(figsize=figsize)
+            ax1.semilogx(self.freq, self.alpha, label='Narrowband')
+            ax2 = ax1.twiny()
+            ax2.set_xscale('log')
+            if plot == 'available':
+                lists = sorted(available_data.items())  # sorted by key, return a list of tuples
+                x, y = zip(*lists)  # unpack a list of pairs into two tuples
+                ax1.semilogx(x, y, 'o-', label=f'1/{nthOct} octave band')
+                ax1.set_xlim([min(self.freq), max(self.freq)])
+            elif plot == 'all':
+                ax1.semilogx(bands[:, 1], result, 'o-', label=f'1/{nthOct} octave band')
+                x = bands[:, 1].tolist()
+            ax2.set_xticks([freq for freq in x])
+            ax2.set_xticklabels([f'{freq:0.1f}' for freq in x])
+            ax2.set_xlim(ax1.get_xlim())
+            ax1.set_ylabel('Absorption Coefficient [-]')
+            ax1.set_xlabel('Narrowband Frequency [Hz]')
+            ax2.set_xlabel(f'1/{nthOct} Octave Bands [Hz]')
+            ax1.set_ylim([-0.1, 1.1])
+            ax1.legend(loc='best')
+            ax1.get_xaxis().set_major_formatter(ticker.ScalarFormatter())  # Remove scientific notation from xaxis
+            ax1.get_xaxis().set_minor_formatter(ticker.ScalarFormatter())  # Remove scientific notation from xaxis
+            ax1.tick_params(which='minor', length=5, rotation=-90,
+                            axis='x')  # Set major and minor ticks to same length
+            ax1.tick_params(which='major', length=5, rotation=-90,
+                            axis='x')  # Set major and minor ticks to same length
+            ax2.tick_params(which='major', length=5, rotation=-90,
+                            axis='x')  # Set major and minor ticks to same length
+            ax1.minorticks_on()  # Set major and minor ticks to same length
+            ax2.minorticks_off()
+            ax1.grid('minor')
             plt.show()
 
-        if show_table:
-            pandas.set_option("display.precision", 2)
-            freq_bands = []
-            absorption = []
-            absorption_percentual = []
-            for i in range(len(bands)):
-                freq_bands.append(float(f"{bands[i]:0.2f}"))
-                absorption.append(float(f"{result[i]:0.2f}"))
-                absorption_percentual.append(float(f"{result[i] * 100:0.0f}"))
-            data = {"Bands [Hz]": freq_bands, "Absorption [-]": absorption, "Absorption [%]": absorption_percentual}
-            df = pandas.DataFrame(data=data).set_index("Bands [Hz]").T
-            df = df.style.set_caption(f"1/{n_oct} Octave Absorption Data")
+        if returnValues:
+            return bands[:, 1], result, available_data
 
-            try:
-                from IPython.display import display
-                display(df)
-            except:
-                print("IPython.display unavailable.")
+    def field_impedance(self, z):
 
-        return bands, result
+        A = 1 / z
 
-    def save2sheet(self, timestamp=False, conversion=None, ext=".xlsx", chart_styles=None, n_oct=3):
+        self.z_normal = z[:, 0]
+
+        Af1 = A * np.sin(np.deg2rad(self.incidence_angle))
+        Af2 = np.sin(np.deg2rad(self.incidence_angle))
+        Af_div = Af1 / Af2
+
+        Af = integrate.simps(Af_div, np.deg2rad(self.incidence_angle))
+
+        return 1 / Af
+    
+    def compute(self, rigid_backing=True, conj=False, show_layers=True):
         """
-        Save current values and layer properties to an Excel spreadsheet.
-        Parameters
-        ----------
-        timestamp : bool, optional
-            Boolean to add timestamping to the filename.
-        conversion : list or float and string, optional
-            List containing conversion ratio and string containing the name of the converted unit.
-        ext : string, optional
-            Desired file extension.
-        chart_styles : list of ints, optional
-            List containing indexes of styles to use in the plots inside the exported spreadsheet.
-        n_oct : int, optional
-            Fractional octave bands that the absorption will be filtered to.
+        Calculates the final transfer matrix for the existing layers.
+
+        Input:
+         - rigid_backing: bool, if True adds a rigid layer to the end of the device
         """
 
-        if chart_styles is None:
-            chart_styles = [35, 36]
-        if conversion is None:
-            conversion = [0.0393701, "[inches]"]
-        timestr = time.strftime("%Y%m%d-%H%M_")
-        folder_check = os.path.exists(self.project_folder + os.sep + "Treatments")
-        if folder_check is False:
-            os.mkdir(self.project_folder + os.sep + "Treatments")
-        full_path = self.project_folder + os.sep + "Treatments" + os.sep + self.filename + ext
-        if timestamp is True:
-            full_path = self.project_folder + os.sep + "Treatments" + os.sep + timestr + self.filename + ext
+        self.matrix = dict(collections.OrderedDict(sorted(self.matrix.items())))
 
-        if ext == ".xlsx":
-            workbook = xlsxwriter.Workbook(full_path)
-            worksheet = workbook.add_worksheet()
+        Tg = self.matrix[0]['matrix']
+        for matrix in range(len(self.matrix) - 1):
+            Tg = np.einsum('ijna,jkna->ikna', Tg, self.matrix[matrix + 1]['matrix'])
 
-            # Setting formats
-            bold = workbook.add_format({"bold": True, "font_color": "black", "align": "center", "border": 2})
-            regular = workbook.add_format({"bold": False, "font_color": "black", "align": "center", "border": 1})
-            regular_left_bold = workbook.add_format({"bold": True, "font_color": "black", "align": "right", "border": 1,
-                                                     })
-            regular_left = workbook.add_format({"bold": False, "font_color": "black", "align": "left", "border": 1,
-                                                })
+        Ag = Tg[0, 0]
+        Bg = Tg[0, 1]
+        Cg = Tg[1, 0]
+        Dg = Tg[1, 1]
 
-            # Adding frequency related data
-            worksheet.write(0, 0, "Frequency", bold)
-            worksheet.write(0, 1, "Real Z", bold)
-            worksheet.write(0, 2, "Img Z", bold)
-            worksheet.write(0, 3, "Absorption", bold)
-            for i in range(len(self.freq)):
-                worksheet.write(1 + i, 0, self.freq[i], regular)
-                worksheet.write(1 + i, 1, np.real(self.z_norm[i]), regular)
-                worksheet.write(1 + i, 2, np.imag(self.z_norm[i]), regular)
-                worksheet.write(1 + i, 3, self.alpha[i], regular)
-
-            # Absorption coefficient plot
-            chart_abs = workbook.add_chart({"type": "line"})
-            chart_abs.add_series({"name": ["Sheet1", 0, 3],
-                                  "categories": ["Sheet1", 1, 0, len(self.freq) + 1, 0],
-                                  "values": ["Sheet1", 1, 3, len(self.freq) + 1, 3], })
-            chart_abs.set_title({"name": "Absorption Coefficient"})
-            chart_abs.set_x_axis({"name": "Frequency [Hz]"})
-            chart_abs.set_y_axis({"name": "Alpha [-]"})
-            chart_abs.set_style(chart_styles[0])
-            worksheet.insert_chart("G1", chart_abs, {"x_offset": 0, "y_offset": 0, "x_scale": 1.334, "y_scale": 1.11})
-
-            # Impedance plot
-            chart_z = workbook.add_chart({"type": "line"})
-            chart_z.add_series({"name": ["Sheet1", 0, 1],
-                                "categories": ["Sheet1", 1, 0, len(self.freq) + 1, 0],
-                                "values": ["Sheet1", 1, 1, len(self.freq) + 1, 1], })
-            chart_z.add_series({"name": ["Sheet1", 0, 2],
-                                "categories": ["Sheet1", 1, 0, len(self.freq) + 1, 0],
-                                "values": ["Sheet1", 1, 2, len(self.freq) + 1, 2], })
-            chart_z.set_title({"name": "Normalized Surface Impedance"})
-            chart_z.set_x_axis({"name": "Frequency [Hz]"})
-            chart_z.set_y_axis({"name": "Z [Pa*s/m]"})
-            chart_z.set_style(chart_styles[1])
-            worksheet.insert_chart("G17", chart_z, {"x_offset": 0, "y_offset": 0, "x_scale": 1.334, "y_scale": 1.11})
-
-            # Adding n_oct band absorption coeffiecients
-            line = 0
-            idx = 4
-            worksheet.merge_range(line, idx, line, idx + 1, f"1/{n_oct} octave band absorption coefficients", bold)
-            line += 1
-            worksheet.write(line, idx, "Frequency Band [Hz]", bold)
-            worksheet.write(line, idx + 1, "Absorption Coeffiecient [-]", bold)
-            line += 1
-            xOct, yOct = self.filter_alpha(n_oct=n_oct, view=False)
-            for x, y in zip(xOct, yOct):
-                worksheet.write(line, idx, x, regular)
-                worksheet.write(line, idx + 1, y, regular)
-                line += 1
-            if "material_model" not in self.filename:
-                # Adding device properties
-                total_depth = 0
-                worksheet.merge_range(line, idx, line, idx + 1, "Device Properties", bold)
-                line += 1
-                worksheet.write(line, idx, "(1 - Front face)", regular)
-                worksheet.write(line, idx + 1, f"({len(self.matrix)} - Rear face)", regular)
-                line += 1
-                worksheet.write(line, idx, "Sound incidence:", regular_left_bold)
-                worksheet.write(line, idx + 1, self.incidence, regular_left)
-                line += 1
-                worksheet.write(line, idx, "Angle [°]:", regular_left_bold)
-                if self.incidence == "diffuse":
-                    worksheet.write(line, idx + 1,
-                                    f"{min(self.incidence_angle):0.0f} - {max(self.incidence_angle):0.0f}",
-                                    regular_left)
-                else:
-                    worksheet.write(line, idx + 1,
-                                    f"{(self.incidence_angle[0]):0.0f}",
-                                    regular_left)
-                line -= 1
-                for i in range(1, len(self.matrix) + 1):
-                    if i > 1:
-                        line -= 1
-                    worksheet.merge_range(1 + i + line, idx, 1 + i + line, idx + 1, f"Layer {i}", bold)
-                    line += 1
-                    for key, value in self.matrix[i - 1].items():
-                        if key != "matrix":
-                            if isinstance(value, str) or isinstance(value, bool):
-                                worksheet.write(1 + i + line, idx, f"{key}:", regular_left_bold)
-                                worksheet.write(1 + i + line, idx + 1, f"{value}", regular_left)
-                                line += 1
-                            else:
-                                if "[mm]" in key:
-                                    converted = key.replace("[mm]", conversion[1])
-                                    worksheet.write(1 + i + line, idx, f"{key}:", regular_left_bold)
-                                    worksheet.write(1 + i + line, idx + 1, value, regular_left)
-                                    line += 1
-                                    worksheet.write(1 + i + line, idx, f"{converted}:", regular_left_bold)
-                                    worksheet.write(1 + i + line, idx + 1, value * conversion[0], regular_left)
-                                    line += 1
-                                else:
-                                    worksheet.write(1 + i + line, idx, f"{key}:", regular_left_bold)
-                                    worksheet.write(1 + i + line, idx + 1, value, regular_left)
-                                    line += 1
-                                if "thickness" in key:
-                                    total_depth += value
-
-                worksheet.merge_range(1 + i + line, idx, 1 + i + line, idx + 1, "Total", bold)
-                line += 1
-                worksheet.write(1 + i + line, idx, f"total treatment depth [mm]:", regular_left_bold)
-                worksheet.write(1 + i + line, idx + 1, total_depth, regular_left)
-                line += 1
-                worksheet.write(1 + i + line, idx, f"total treatment depth {conversion[1]}:", regular_left_bold)
-                worksheet.write(1 + i + line, idx + 1, total_depth * conversion[0], regular_left)
-                line += 1
-
-            # Setting column widths
-            worksheet.set_column("A:D", 12)
-            worksheet.set_column("E:F", 28)
-
-            workbook.close()
-
-        elif ext == ".csv":
-            df1 = pandas.DataFrame()
-            df1["Frequency"] = self.freq
-            df1["Real Z"] = np.real(self.z_norm)
-            df1["Imag Z"] = np.imag(self.z_norm)
-            df1["Absorption"] = self.alpha
-            df2 = pandas.DataFrame()
-            df2["Bands"], df2[f"1/{n_oct} octave band absorption coefficients"] = self.filter_alpha(n_oct=n_oct,
-                                                                                                    view=False)
-            df3 = pandas.concat([df1, df2], axis=1)
-            df3.to_csv(full_path, index=False, float_format="%.3f", sep=";")
+        if rigid_backing:
+            zrad = 0
 
         else:
-            raise NameError("Unidentified extension. Available extensions: ['.xlsx', '.csv']")
+            # Radiation impedance for an unflanged circular tube in an infinite baffle
+            zrad = self.z0 * (0.25 * (self.w0 * self.srad) ** 2 + 1j * 0.61 * self.w0 * self.srad)
 
-        print(f"Sheet saved to ", full_path)
+        zc = self.s0 * (Ag + (Bg * zrad / self.srad)) / (Cg + (Dg * zrad / self.srad))
 
-    def save(self):
-        """Saves TMM into HDF5 file."""
-        folder_check = os.path.exists(self.project_folder + os.sep + "Treatments")
-        if folder_check is False:
-            os.mkdir(self.project_folder + os.sep + "Treatments")
+        if self.incidence == 'diffuse':
+            zc = self.field_impedance(zc)
+        #             zc = zc.reshape(len(self.freq), 1)
 
-        self.reduce_size()
-
-        h5utils.save_class_to_hdf5(self, filename=self.filename,
-                                   folder=self.project_folder + os.sep + "Treatments" + os.sep)
-        print("HDF5 file saved at " + self.project_folder + os.sep + "Treatments" + os.sep + self.filename + ".h5")
-
-    def load(self, filename):
-        """
-        Loads TMM data from HDF5 file.
-        Parameters
-        ----------
-        filename : string
-            Input filename.
-        """
-        folder_check = os.path.exists(self.project_folder + os.sep + "Treatments")
-        if self.project_folder:
-            if folder_check is False:
-                h5utils.load_class_from_hdf5(self, filename, folder=self.project_folder + os.sep)
-            else:
-                h5utils.load_class_from_hdf5(self, filename,
-                                             folder=self.project_folder + os.sep + "Treatments" + os.sep)
+        if not conj:
+            self.z = zc
         else:
-            h5utils.load_class_from_hdf5(self, filename)
-        self.rebuild()
-        print(filename + ".h5 loaded successfully.")
+            self.z = np.conj(zc)
 
-    def plot(self, **kwargs):
-        """View acoustic data. See tmm._plot.acoustic data for kwargs."""
-        if "filename" not in kwargs:
-            kwargs["filename"] = self.filename
-        if "project_folder" not in kwargs:
-            kwargs["project_folder"] = self.project_folder
-        _, _, _ = plot.acoustic_data([self], **kwargs)
-        plt.show()
-© 2022 GitHub, Inc.
-Terms
-Privacy
-Security
-Status
-Docs
-Contact GitHub
-Pricing
-API
-Training
-Blog
-About
-Loading complete
+        self.matrix[len(self.matrix)] = {'rigid_backing': rigid_backing,
+                                         'impedance_conjugate': conj}
+
+        if show_layers:
+            self.show_layers()
+
+    
+if __name__ == '__main__':
+    tmm = TMM(fmax=5000,
+              incidence='diffuse',
+              incidence_angle=[0, 78, 1])
+
+    #     tmm.membrane_layer(t=1, rho=8050)
+    #     tmm.air_layer(t=10)
+    #     tmm.porous_layer(model='db', t=100, sigma=23)
+
+    #     tmm.perforated_panel_layer(t=1, d=1, s=14, end_correction='nesterov', method='eq_fluid')
+    # tmm.perforated_panel_layer(t=1, d=1, s=14, end_correction='nesterov', method='barrier')
+    #     tmm.perforated_panel_layer(t=1, d=1, s=14, end_correction='nesterov', method='barrier_mpp')
+    #     tmm.slotted_panel_layer(t=19, w=1, s=40)
+    tmm.porous_layer(model='miki', t=50, sigma=30)
+    # tmm.air_layer(t=60)
+
+    tmm.compute(rigid_backing=True, show_layers=True)
+    tmm.plot(figsize=(15, 5), plots=['alpha'], saveFig=False, timestamp=True, filename='TMM')
+    # tmm.filter_alpha(plot='available')
+    # tmm.save2sheet(timestamp=True, filename='TMM', nthOct=1)
