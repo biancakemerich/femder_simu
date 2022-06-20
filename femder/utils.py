@@ -6,11 +6,13 @@ Created on Mon Dec 28 11:58:35 2020
 """
 from __future__ import division, print_function
 import numpy as np
-
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 import matplotlib.ticker as ticker
+from matplotlib import gridspec
 import scipy.signal.windows as win
+import scipy.signal as signal
+import more_itertools
 
 def find_nearest(array, value):
     """
@@ -521,58 +523,250 @@ class IR(object):
         self._low_pass_order = order
 
 
-    def compute_room_impulse_response(
-            self, values_at_filtered_frequencies):
+    # def compute_room_impulse_response(
+    #         self, values_at_filtered_frequencies):
+    #     """
+    #     Compute the room impulse response.
+
+    #     Parameters
+    #     ----------
+    #     values_at_filtered_frequencies : array
+    #         The frequency domain values to be transformed taken
+    #         at the filtered frequencies.
+
+    #     Output
+    #     ------
+    #     An array of approximate time values at the given time steps.
+        
+    #     """
+    #     from scipy.signal import butter, freqz, tukey
+    #     from scipy.fftpack import ifft
+        
+    #     b_high, a_high = butter(
+    #             self.high_pass_filter_order,
+    #             self.high_pass_frequency * 2 / self.sampling_rate, 
+    #             'high')
+
+    #     b_low, a_low = butter(
+    #             self.low_pass_filter_order,
+    #             self.low_pass_frequency * 2 / self.sampling_rate, 
+    #             'low')
+
+    #     high_pass_values = freqz(
+    #             b_high, a_high, self.filtered_frequencies,
+    #             fs=self.sampling_rate)[1]
+
+    #     low_pass_values = freqz(
+    #             b_low, a_low, self.filtered_frequencies,
+    #             fs=self.sampling_rate)[1]
+
+    #     butter_filtered_values = (values_at_filtered_frequencies * 
+    #             np.conj(low_pass_values) * np.conj(high_pass_values))
+
+    #     # windowed_values = butter_filtered_values * tukey(len(self.filtered_frequencies),
+    #     #         min([self.maximum_frequency - self.low_pass_frequency,
+    #     #              self.high_pass_frequency - self.minimum_frequency]) /
+    #     #         (self.maximum_frequency - self.minimum_frequency))
+
+    #     windowed_values = butter_filtered_values * tukey(len(self.filtered_frequencies), alpha=self._alpha)
+
+    #     full_frequency_values = np.zeros(self.number_of_frequencies, dtype='complex128')
+    #     full_frequency_values[self._frequency_filter_indices] = windowed_values
+    #     full_frequency_values[-self._frequency_filter_indices] = np.conj(windowed_values)
+
+    #     return ifft((full_frequency_values)) * self.number_of_frequencies
+    
+    def compute_impulse_response(self, values_at_freq, alpha=None, auto_roll=False, auto_window=True, irr_filters=False,
+                                 view=False):
         """
         Compute the room impulse response.
 
         Parameters
         ----------
-        values_at_filtered_frequencies : array
-            The frequency domain values to be transformed taken
-            at the filtered frequencies.
+        values_at_freq : array
+            The frequency domain values to be transformed taken at the filtered frequencies.
+        alpha : float or None
+            Tukey window alpha value. If 'None' is passed it will be automatically calculated.
+        auto_rool : bool, optional
+            Option to automatically roll the impulse response to ensure no noise at the end.
+        auto_window : bool, optional
+            Option to automatically filter the impulse response to ensure no noise at the end.
+        irr_filters : bool, optionak
+            Option to use additional low and high-pass filters during the preconditioning of the input data.
+        view : bool, optional
+            Option to show plot with different parameters for analysis.
 
-        Output
+        Returns
         ------
         An array of approximate time values at the given time steps.
-        
         """
-        from scipy.signal import butter, freqz, tukey
-        from scipy.fftpack import ifft
-        
-        b_high, a_high = butter(
-                self.high_pass_filter_order,
-                self.high_pass_frequency * 2 / self.sampling_rate, 
-                'high')
 
-        b_low, a_low = butter(
-                self.low_pass_filter_order,
-                self.low_pass_frequency * 2 / self.sampling_rate, 
-                'low')
+        # Applying low and high-pass filters
+        """
+        This minimizes the phase differences from the input pressure data to the FFT of the  computed impulse response.
+        Filters of order higher than 4 are unstable in Scipy, consider replacing this by FIR filters in the future.
+        """
+        b_high, a_high = signal.butter(self.high_pass_filter_order, self.high_pass_freq * 2 / self.fs, "high")
+        b_low, a_low = signal.butter(self.low_pass_filter_order, self.low_pass_freq * 2 / self.fs, "low")
+        _, high_pass_values = signal.freqz(b_high, a_high, self.freq, fs=self.fs)
+        _, low_pass_values = signal.freqz(b_low, a_low, self.freq, fs=self.fs)
+        butter_filtered_values = (values_at_freq * np.conj(low_pass_values) * np.conj(high_pass_values))
 
-        high_pass_values = freqz(
-                b_high, a_high, self.filtered_frequencies,
-                fs=self.sampling_rate)[1]
+        # Applying Tukey window
+        self.alpha = max([self.fmax - self.low_pass_freq, self.high_pass_freq - self.fmin]) / (
+                    self.fmax - self.fmin) if alpha is None else alpha
+        windowed_values = butter_filtered_values * signal.tukey(len(self.freq),
+                                                                self.alpha) if irr_filters \
+            else values_at_freq * signal.tukey(len(self.freq), self.alpha)
+        full_freq_values = np.zeros(self.num_freq, dtype="complex64")
+        full_freq_values[self.freq_filter_indices] = windowed_values
+        full_freq_values[-self.freq_filter_indices] = np.conj(windowed_values)
 
-        low_pass_values = freqz(
-                b_low, a_low, self.filtered_frequencies,
-                fs=self.sampling_rate)[1]
+        # Array containing the IR at different calculation points - [raw, rolled, filtered]
+        ir = [np.real(np.fft.ifft(full_freq_values) * self.num_freq) for _ in range(3)]
+        return_id = 0
 
-        butter_filtered_values = (values_at_filtered_frequencies * 
-                np.conj(low_pass_values) * np.conj(high_pass_values))
+        # Identifying noise at the end
+        parts = 100
+        n = int(self.fs / parts)  # Dividing the impulse response into equal parts
+        rolling_window = list(more_itertools.windowed(ir[0], step=n, n=n, fillvalue=0))  # Creating the rolling window
+        delta_amp = [np.sum(np.abs(win) ** 2) for win in rolling_window]  # Getting the total energy of each slice
 
-        # windowed_values = butter_filtered_values * tukey(len(self.filtered_frequencies),
-        #         min([self.maximum_frequency - self.low_pass_frequency,
-        #              self.high_pass_frequency - self.minimum_frequency]) /
-        #         (self.maximum_frequency - self.minimum_frequency))
+        # Rolling the ir to remove move noise at the end
+        cut_sample = delta_amp.index(np.min(delta_amp)) + 1  # Finding the slice with the smallest amplitude variation
+        cut_size = (len(rolling_window) - cut_sample) * n
+        ir[1] = np.roll(ir[1], cut_size)  # Rolling the impulse response
 
-        windowed_values = butter_filtered_values * tukey(len(self.filtered_frequencies), alpha=self._alpha)
+        # Filter the IR to remove noise at the end
+        filter_sample = delta_amp.index(np.min(delta_amp)) - int(
+            parts / (parts * 0.75))  # Finding the slice with the smallest amplitude variation
+        filter_size = (len(rolling_window) - filter_sample) * n
+        tukey = np.concatenate((np.ones(filter_sample * n), signal.tukey(filter_size * 2, 1)[filter_size::]))
+        ir[2] = ir[2] * tukey
 
-        full_frequency_values = np.zeros(self.number_of_frequencies, dtype='complex128')
-        full_frequency_values[self._frequency_filter_indices] = windowed_values
-        full_frequency_values[-self._frequency_filter_indices] = np.conj(windowed_values)
+        if auto_roll:
+            return_id = 1
+        if auto_window:
+            return_id = 2
 
-        return ifft((full_frequency_values)) * self.number_of_frequencies
+        # Plotting
+        if view:
+            _, _, _ = plot.impulse_response_calculation(self.freq, ir, values_at_freq, self.freq_filter_indices, tukey,
+                                                        self.alpha, rolling_window, cut_sample, filter_sample, n,
+                                                        return_id, high_pass_values, low_pass_values)
+
+        return ir[return_id]
     
+    
+    def impulse_response_calculation(freq, ir, values_at_freq, freq_filter_indices, tukey, alpha, rolling_window,
+                                 cut_sample, filter_sample, n, return_id, high_pass_values, low_pass_values,
+                                 base_fontsize=15, linewidth=2, figsize=(16, 20)):
+        """
+        Auxiliary plot to view impulse response calculation results, windows and filters.
+    
+        Parameters
+        ----------
+        freq : array
+            Frequency vector.
+        ir : list
+            List containing calculated IRs.
+        values_at_freq : array
+            Complex pressure values at the receiver.
+        freq_filter_indices : array
+            Indices of the frequency range of analysis.
+        tukey : array
+            Tukey window used to filter the noise at the end of the IR during post-processing.
+        alpha : float
+            Alpha value of the pre-processing Tukey window.
+        rolling_window : iterable
+            List of rolling windows.
+        cut_sample : int
+            Sample of the window of lowest energy.
+        filter_sample : int
+            Sample at which the Tukey window will start to remove the noise at the end.
+        n : int
+            Size of the rolling windows in samples.
+        return_id : int
+            Index of which IR from the IR list will be returned.
+        high_pass_values : array
+            High-pass filter frequency response.
+        low_pass_values : array
+            Low-pass filter frequency response.
+        base_fontsize : int
+            Base font size.
+        linewidth : int
+            Plot line width.
+        figsize : tuple
+            Matplotlib figure size.
+    
+        Returns
+        -------
+        Matplotlib figure, Gridspec object and list of Matplotlib axes.
+        """
 
+        fig = plt.figure(figsize=figsize)
+        gs = gridspec.GridSpec(5, 1)
+        ax = [plt.subplot(gs[i, 0]) for i in range(5)]
+    
+        i = 0
+    
+        ax[i].set_title("Impulse Response", size=base_fontsize + 2, fontweight="bold", loc="left")
+        ax[i].set_xlabel("Samples [n]", size=base_fontsize)
+        ax[i].set_ylabel("Amplitude [-]", size=base_fontsize)
+        ax[i].plot(ir[0], alpha=0.3, linewidth=linewidth, label="Filtered Input Data")
+        ax[i].axvline(filter_sample * n, color="b", label="Filter start point")
+        ax[i].plot(tukey * max(ir[0]), label="Filter window", linewidth=linewidth)
+        for r in range(len(rolling_window) + 1):
+            ax[i].axvline(r * n, color="k", zorder=0, alpha=0.3, linewidth=linewidth, linestyle=":",
+                          label="Rolling windows" if r == 0 else None)
+        ax[i].axvline(cut_sample * n, color="r", label="Lowest energy", linewidth=linewidth, linestyle="--")
+        ax[i].plot(ir[return_id], alpha=0.7, linewidth=linewidth, label="Processed IR")
+        i += 1
+    
+        ax[i].set_title(f"Frequency Response", size=base_fontsize + 2, fontweight="bold", loc="left")
+        ax[i].set_xlabel("Frequency [Hz]", size=base_fontsize)
+        ax[i].set_ylabel("Amplitude [dB]", size=base_fontsize)
+        ax[i].plot(freq, acoustics.pressure2spl(np.abs(values_at_freq)), label="Input Data", linewidth=linewidth)
+        ax[i].plot(freq, acoustics.pressure2spl(np.abs(helpers.fft(ir[return_id])[freq_filter_indices])),
+                   label="Processed IR", linewidth=linewidth, linestyle=":")
+        i += 1
+    
+        ax[i].set_title(f"Wrapped Phase Response", size=base_fontsize + 2, fontweight="bold", loc="left")
+        ax[i].set_xlabel("Frequency [Hz]", size=base_fontsize)
+        ax[i].set_ylabel("Angle [deg]", size=base_fontsize)
+        ax[i].plot(freq, np.rad2deg(np.angle(values_at_freq)), label="Input Data", linewidth=linewidth)
+        ax[i].plot(freq, np.rad2deg(np.angle(acoustics.fft(ir[return_id])[freq_filter_indices])),
+                   label="Processed IR",
+                   linewidth=linewidth)
+        i += 1
+    
+        ax[i].set_title(f"Unwrapped Phase Response", size=base_fontsize + 2, fontweight="bold", loc="left")
+        ax[i].set_xlabel("Frequency [Hz]", size=base_fontsize)
+        ax[i].set_ylabel("Angle [deg]", size=base_fontsize)
+        ax[i].plot(freq, np.rad2deg(np.unwrap(np.angle(values_at_freq))), label="Input Data",
+                   linewidth=linewidth)
+        ax[i].plot(freq, np.rad2deg(np.unwrap(np.angle(acoustics.fft(ir[return_id])[freq_filter_indices]))),
+                   label="Processed IR",
+                   linewidth=linewidth)
+        i += 1
+    
+        ax[i].set_title(f"Filters and windows response", size=base_fontsize + 2, fontweight="bold", loc="left")
+        ax[i].set_xlabel("Frequency [Hz]", size=base_fontsize)
+        ax[i].set_ylabel("Amplitude [dBFS]", size=base_fontsize)
+        ax[i].plot(freq, acoustics.pressure2spl(abs(high_pass_values), ref=1), label="High-pass",
+                   linewidth=linewidth)
+        ax[i].plot(freq, acoustics.pressure2spl(abs(low_pass_values), ref=1), label="Low-Pass",
+                   linewidth=linewidth)
+        ax[i].plot(freq, acoustics.pressure2spl(abs(ss.tukey(len(freq), alpha)), ref=1),
+                   label="Tukey", linewidth=linewidth)
+        i += 1
+    
+        for j in range(i):
+            ax[j].legend(fontsize=base_fontsize - 2, loc="best", ncol=6)
+            ax[j].grid("minor")
+            ax[j].tick_params(axis='both', which='both', labelsize=base_fontsize - 3)
+    
+        gs.tight_layout(fig, pad=1)
+
+    return fig, gs, ax
 
